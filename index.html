@@ -1,0 +1,1783 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Latent Art Canvas V3 - 双层解码 + 轨迹可视化</title>
+    <style>
+        :root {
+            --green: #10b981;
+            --red: #ef4444;
+            --panel: rgba(0, 0, 0, 0.72);
+            --border: rgba(255, 255, 255, 0.1);
+            --text: #d1d5db;
+            --muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #050505;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            touch-action: none;
+        }
+
+        body.exhibition header,
+        body.exhibition .params-overlay {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        body.exhibition .viz-stack {
+            display: none;
+        }
+
+        body.exhibition main {
+            display: grid;
+            grid-template-columns: 1fr;
+            grid-template-areas: "art";
+            place-items: center;
+            justify-content: center;
+            align-items: center;
+            padding-bottom: 5.5rem;
+        }
+
+        body.exhibition .controls {
+            opacity: 0.16;
+        }
+
+        body.exhibition .controls:hover {
+            opacity: 1;
+        }
+
+        header {
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.5);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(8px);
+            z-index: 10;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            font-size: 0.875rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: var(--green);
+            white-space: nowrap;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            background: var(--green);
+            border-radius: 50%;
+            margin-right: 8px;
+            box-shadow: 0 0 10px var(--green);
+            animation: pulse 1s infinite alternate;
+            display: inline-block;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.4; transform: scale(0.8); }
+            100% { opacity: 1; transform: scale(1.2); }
+        }
+
+        main {
+            flex-grow: 1;
+            display: grid;
+            grid-template-columns: 460px minmax(0, 1fr);
+            grid-template-areas: "side art";
+            column-gap: 2rem;
+            align-items: center;
+            position: relative;
+            padding: 1.5rem 2rem 6.5rem;
+            min-height: 0;
+        }
+
+        .art-frame {
+            grid-area: art;
+            justify-self: center;
+            position: relative;
+            width: 100%;
+            max-width: min(72vh, 58vw);
+            aspect-ratio: 1 / 1;
+            background: #111;
+            box-shadow:
+                0 0 50px rgba(0, 0, 0, 0.8),
+                0 0 0 1px rgba(255, 255, 255, 0.1);
+        }
+
+        body.exhibition .art-frame {
+            grid-area: art;
+            justify-self: center;
+            align-self: center;
+            width: min(78vh, 78vw);
+            max-width: none;
+            transform: none;
+        }
+
+        canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .latent-matrix {
+            display: none;
+        }
+
+        .latent-cell {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.1);
+            transition: background-color 0.1s linear;
+        }
+
+        .params-overlay {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            padding: 1rem;
+            font-size: 0.75rem;
+            color: var(--muted);
+            border-radius: 4px;
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            min-width: 190px;
+            width: fit-content;
+            display: grid;
+            grid-template-columns: repeat(2, max-content);
+            column-gap: 1.2rem;
+            row-gap: 0.25rem;
+        }
+
+        .params-overlay div {
+            margin-bottom: 0;
+        }
+
+        .params-overlay span {
+            color: var(--green);
+            font-weight: 700;
+        }
+
+        .controls {
+            position: fixed;
+            right: 2rem;
+            bottom: 1.25rem;
+            left: 2rem;
+            display: flex;
+            gap: 0.75rem;
+            z-index: 20;
+            flex-wrap: wrap;
+            align-items: center;
+            transition: opacity 0.2s;
+        }
+
+        button.action-btn {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: var(--text);
+            padding: 7px 13px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            border-radius: 2px;
+            backdrop-filter: blur(4px);
+            transition: all 0.2s;
+        }
+
+        button.action-btn:hover {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: var(--green);
+            color: var(--green);
+        }
+
+        button.action-btn.active {
+            border-color: var(--green);
+            color: var(--green);
+            background: rgba(16, 185, 129, 0.16);
+        }
+
+        .control-panel {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 2px;
+            padding: 6px 9px;
+            backdrop-filter: blur(4px);
+            color: var(--muted);
+            font-size: 0.68rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .control-panel input[type="range"] {
+            width: 86px;
+            accent-color: var(--green);
+        }
+
+        .control-panel span {
+            color: var(--green);
+            min-width: 2.4rem;
+            text-align: right;
+        }
+
+        .axis-controls {
+            display: flex;
+            gap: 0.35rem;
+        }
+
+        .axis-controls button {
+            min-width: 32px;
+            padding: 5px 8px;
+        }
+
+        .palette-panel {
+            align-items: center;
+            gap: 0.6rem;
+            margin-top: 0.75rem;
+            width: fit-content;
+        }
+
+        .palette-swatches {
+            display: grid;
+            grid-template-columns: repeat(8, 13px);
+            gap: 3px;
+        }
+
+        .palette-swatch {
+            width: 13px;
+            height: 13px;
+            padding: 0;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 1px;
+            cursor: pointer;
+            outline: 0 solid transparent;
+        }
+
+        .palette-swatch.active {
+            outline: 2px solid rgba(16, 185, 129, 0.75);
+            outline-offset: 1px;
+        }
+
+        .palette-swatch.manual {
+            outline: 2px solid #ffffff;
+            outline-offset: 1px;
+        }
+
+        .viz-stack {
+            grid-area: side;
+            position: relative;
+            align-self: stretch;
+            display: flex;
+            flex-direction: column;
+            gap: 0.9rem;
+            z-index: 15;
+            max-height: calc(100vh - 9rem);
+            overflow-y: auto;
+            padding-right: 0.35rem;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(16, 185, 129, 0.45) rgba(255, 255, 255, 0.04);
+        }
+
+        .viz-stack::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .viz-stack::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .viz-stack::-webkit-scrollbar-thumb {
+            background: rgba(16, 185, 129, 0.45);
+            border-radius: 999px;
+        }
+
+        .viz-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.75rem;
+            backdrop-filter: blur(4px);
+        }
+
+        .viz-title {
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+        }
+
+        #latent-map-canvas,
+        #decoder-canvas {
+            display: block;
+            position: static;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        #latent-map-canvas {
+            width: 220px;
+            height: 220px;
+            aspect-ratio: 1 / 1;
+        }
+
+        #decoder-canvas {
+            width: 100%;
+            height: 210px;
+        }
+
+        @media (max-width: 980px) {
+            main {
+                display: grid;
+                grid-template-columns: 1fr;
+                grid-template-areas:
+                    "art"
+                    "side";
+                row-gap: 1rem;
+                align-items: start;
+                justify-items: center;
+                overflow-y: auto;
+                padding: 1rem 1rem 8rem;
+            }
+
+            .viz-stack {
+                position: relative;
+                top: auto;
+                left: auto;
+                transform: none;
+                width: min(100%, 460px);
+                max-height: none;
+                overflow-y: visible;
+                padding-right: 0;
+            }
+
+            .params-overlay {
+                max-width: 100%;
+            }
+
+            .art-frame {
+                transform: none;
+                width: min(86vw, 62vh);
+                max-width: none;
+            }
+
+            .controls {
+                left: 1rem;
+                right: 1rem;
+                bottom: 1rem;
+                gap: 0.5rem;
+            }
+
+            button.action-btn {
+                padding: 7px 10px;
+                font-size: 0.65rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand"><span class="status-indicator"></span>AUTONOMOUS LATENT EVOLUTION</div>
+        <div>GEN <span id="gen-counter">0</span></div>
+    </header>
+
+    <main>
+        <div class="art-frame">
+            <canvas id="main-canvas" width="600" height="600"></canvas>
+            <div class="latent-matrix" id="matrix-container"></div>
+        </div>
+
+        <div class="controls">
+            <button class="action-btn" id="pause-btn" type="button">PAUSE</button>
+            <button class="action-btn" id="reset-btn" type="button">REBOOT UNIVERSE</button>
+            <button class="action-btn" id="jump-btn" type="button">LATENT JUMP</button>
+            <button class="action-btn" id="mode-btn" type="button">EXHIBIT MODE</button>
+            <button class="action-btn" id="save-btn" type="button">SAVE PNG</button>
+            <button class="action-btn" id="lang-btn" type="button">中文</button>
+            <label class="control-panel" id="color-label">
+                COLORS
+                <input id="color-count" type="range" min="0" max="32" step="1" value="0" />
+                <span id="color-count-value">AUTO</span>
+            </label>
+            <label class="control-panel" id="random-label">
+                RANDOM
+                <input id="randomness" type="range" min="0" max="100" step="1" value="40" />
+                <span id="randomness-value">40</span>
+            </label>
+            <div class="control-panel axis-controls" aria-label="axis controls">
+                <button class="action-btn active" id="axis-both-btn" type="button">XY</button>
+                <button class="action-btn" id="axis-x-btn" type="button">X</button>
+                <button class="action-btn" id="axis-y-btn" type="button">Y</button>
+            </div>
+        </div>
+
+        <div class="viz-stack">
+            <div class="viz-card">
+                <div class="viz-title">LATENT MAP</div>
+                <canvas id="latent-map-canvas" width="220" height="220"></canvas>
+            </div>
+            <div class="viz-card">
+                <div class="viz-title">DECODER VIEW</div>
+                <canvas id="decoder-canvas" width="420" height="210"></canvas>
+                <div class="control-panel palette-panel">
+                    <span id="palette-label">PALETTE</span>
+                    <div class="palette-swatches" id="palette-swatches"></div>
+                    <button class="action-btn" id="palette-auto-btn" type="button">AUTO</button>
+                </div>
+                <div class="params-overlay">
+                    <div>COLORS: <span id="param-colors">0</span>/<span id="param-color-limit">AUTO</span></div>
+                    <div>STEP: <span id="param-step">0.000</span></div>
+                    <div>V_DENS: <span id="param-vdens">0.000</span></div>
+                    <div>H_DENS: <span id="param-hdens">0.000</span></div>
+                    <div>V_SKIP: <span id="param-vskip">0.00</span></div>
+                    <div>H_SKIP: <span id="param-hskip">0.00</span></div>
+                    <div>Z_SPREAD: <span id="param-z">0.00</span></div>
+                    <div>RANDOM: <span id="param-random">0.00</span></div>
+                    <div>AXIS: <span id="param-axis">XY</span></div>
+                    <div>SPEED: <span id="param-speed">0.00</span></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        'use strict';
+
+        const FULL_PALETTE = [
+            '#F8F9FA', '#FDF5E6', '#F0E68C', '#FFD700', '#DAA520', '#FF8C00', '#FF4500', '#E32636',
+            '#B22222', '#A0522D', '#8B4513', '#6B4423', '#C71585', '#800080', '#4B0082', '#120A8F',
+            '#003399', '#0F52BA', '#48CAE4', '#008080', '#50C878', '#00FA9A', '#228B22', '#808000',
+            '#556B2F', '#D2B48C', '#BC8F8F', '#708090', '#778899', '#A9A9A9', '#2F4F4F', '#191919'
+        ];
+
+        const LATENT_DIM = 192;
+        const HIDDEN_1 = 96;
+        const HIDDEN_2 = 64;
+        const OUT_DIM = 64;
+        const FPS_LIMIT = 8;
+        const FRAME_DELAY = 1000 / FPS_LIMIT;
+        const MAX_TRAIL_POINTS = 240;
+        const STORAGE_KEY = 'latent-art-canvas-v3-state';
+        const STRIPE_DENSITY_SCALE = 0.62;
+
+        const sigmoid = x => 1 / (1 + Math.exp(-x));
+        const relu = x => Math.max(0, x);
+        const tanh = x => Math.tanh(x);
+        const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+        const lerp = (a, b, t) => a + (b - a) * t;
+
+        const latentProjector = { x: null, y: null };
+        const latentTrail = [];
+        const latentMapViewport = { scale: 1, maxAbs: 1 };
+        let lastLatentSpeed = 0;
+
+        let universeDecoder = null;
+        let currentEntity = null;
+        let universeSeed = 1;
+        let generationCount = 0;
+        let isPaused = false;
+        let isExhibitionMode = false;
+        let colorLimit = 0;
+        let randomnessLevel = 0.4;
+        let axisMode = 'both';
+        let manualPaletteIndices = [];
+        let lastActivePaletteIndices = [];
+        let currentLanguage = 'en';
+        let animationId = null;
+        let lastParams = null;
+        let lastFrameTime = 0;
+        let hasBootstrapped = false;
+        let lastForwardState = null;
+        let previousDecoderState = null;
+        let lastPersistFrame = 0;
+
+        function randUniform(scale = 1) {
+            return (Math.random() * 2 - 1) * scale;
+        }
+
+        function randNormal() {
+            const u = Math.max(Math.random(), 1e-12);
+            const v = Math.max(Math.random(), 1e-12);
+            return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+        }
+
+        function createUniverseSeed() {
+            return (Math.floor(Math.random() * 0xFFFFFFFF) || 1) >>> 0;
+        }
+
+        function hashString(value) {
+            const str = String(value);
+            let h = 2166136261;
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i);
+                h = Math.imul(h, 16777619);
+            }
+            return h >>> 0;
+        }
+
+        function unitFromHash(hash) {
+            let x = hash >>> 0;
+            x ^= x >>> 16;
+            x = Math.imul(x, 2246822507);
+            x ^= x >>> 13;
+            x = Math.imul(x, 3266489909);
+            x ^= x >>> 16;
+            return (x >>> 0) / 4294967296;
+        }
+
+        function hexToRgb(hex) {
+            const value = hex.replace('#', '');
+            return {
+                r: parseInt(value.slice(0, 2), 16),
+                g: parseInt(value.slice(2, 4), 16),
+                b: parseInt(value.slice(4, 6), 16)
+            };
+        }
+
+        function scientificColor(t, alpha = 1) {
+            const stops = ['#440154', '#414487', '#2A788E', '#22A884', '#7AD151', '#FDE725'].map(hexToRgb);
+            const x = clamp(t, 0, 1) * (stops.length - 1);
+            const i = Math.min(stops.length - 2, Math.floor(x));
+            const f = x - i;
+            const a = stops[i];
+            const b = stops[i + 1];
+            return `rgba(${Math.round(lerp(a.r, b.r, f))},${Math.round(lerp(a.g, b.g, f))},${Math.round(lerp(a.b, b.b, f))},${alpha})`;
+        }
+
+        function createStableSampler(scope, params = null) {
+            const tempo = params ? params.randomTempo : 0.34;
+            const phaseBias = params ? params.randomPhaseBias : 0;
+            const phaseWarp = params ? params.randomPhaseWarp : 0;
+            const rate = randomnessLevel <= 0 ? 0 : Math.pow(randomnessLevel, 1.35) * tempo;
+            const curvedGeneration = generationCount + Math.sin(generationCount * 0.013 + phaseBias) * phaseWarp;
+            const phase = rate <= 0 ? 0 : Math.floor(curvedGeneration * rate + phaseBias * 11);
+            return salt => unitFromHash(hashString(`${universeSeed}:${scope}:${phase}:${salt}`));
+        }
+
+        function randomizeRuntimeControls() {
+            randomnessLevel = 0.18 + Math.random() * 0.62;
+        }
+
+        function initWeight(length, fanIn, fanOut, gain = 1) {
+            const arr = new Float32Array(length);
+            const limit = gain * Math.sqrt(6 / (fanIn + fanOut));
+            for (let i = 0; i < arr.length; i++) arr[i] = randUniform(limit);
+            return arr;
+        }
+
+        function assert(condition, message) {
+            if (!condition) throw new Error(`Self-test failed: ${message}`);
+        }
+
+        function normalizeVector(vec) {
+            let norm = 0;
+            for (let i = 0; i < vec.length; i++) norm += vec[i] * vec[i];
+            norm = Math.sqrt(norm) || 1;
+            for (let i = 0; i < vec.length; i++) vec[i] /= norm;
+        }
+
+        function initLatentProjector() {
+            latentProjector.x = new Float32Array(LATENT_DIM);
+            latentProjector.y = new Float32Array(LATENT_DIM);
+
+            for (let i = 0; i < LATENT_DIM; i++) {
+                latentProjector.x[i] = randNormal();
+                latentProjector.y[i] = randNormal();
+            }
+
+            normalizeVector(latentProjector.x);
+            normalizeVector(latentProjector.y);
+            latentTrail.length = 0;
+        }
+
+        function projectLatentTo2D(z) {
+            if (!latentProjector.x || !latentProjector.y) return { x: 0, y: 0 };
+
+            let px = 0;
+            let py = 0;
+            for (let i = 0; i < LATENT_DIM; i++) {
+                px += z[i] * latentProjector.x[i];
+                py += z[i] * latentProjector.y[i];
+            }
+            return { x: px, y: py };
+        }
+
+        function pushLatentTrail(point) {
+            const prev = latentTrail[latentTrail.length - 1];
+            const speed = prev ? Math.hypot(point.x - prev.x, point.y - prev.y) : 0;
+            lastLatentSpeed = speed;
+            latentTrail.push({ x: point.x, y: point.y, speed });
+            if (latentTrail.length > MAX_TRAIL_POINTS) latentTrail.shift();
+        }
+
+        class DecoderNetwork {
+            constructor() {
+                this.w1 = initWeight(LATENT_DIM * HIDDEN_1, LATENT_DIM, HIDDEN_1, 1.15);
+                this.b1 = new Float32Array(HIDDEN_1);
+
+                this.w2 = initWeight(HIDDEN_1 * HIDDEN_2, HIDDEN_1, HIDDEN_2, 1.20);
+                this.b2 = new Float32Array(HIDDEN_2);
+
+                this.w3 = initWeight(HIDDEN_2 * OUT_DIM, HIDDEN_2, OUT_DIM, 1.10);
+                this.b3 = new Float32Array(OUT_DIM);
+
+                for (let i = 0; i < OUT_DIM; i++) this.b3[i] = randUniform(0.2);
+            }
+
+            dense(input, inDim, outDim, weights, bias, activation) {
+                const out = new Float32Array(outDim);
+                for (let i = 0; i < outDim; i++) {
+                    let sum = bias[i];
+                    const offset = i * inDim;
+                    for (let j = 0; j < inDim; j++) {
+                        sum += input[j] * weights[offset + j];
+                    }
+                    out[i] = activation(sum);
+                }
+                return out;
+            }
+
+            forward(latentZ) {
+                const h1 = this.dense(latentZ, LATENT_DIM, HIDDEN_1, this.w1, this.b1, x => tanh(x));
+                const h2 = this.dense(h1, HIDDEN_1, HIDDEN_2, this.w2, this.b2, x => relu(x));
+                const out = this.dense(h2, HIDDEN_2, OUT_DIM, this.w3, this.b3, x => x);
+                return { latent: latentZ, h1, h2, out };
+            }
+
+            decode(latentZ) {
+                return this.forward(latentZ).out;
+            }
+        }
+
+        class LatentEntity {
+            constructor() {
+                this.z = new Float32Array(LATENT_DIM);
+                this.velocity = new Float32Array(LATENT_DIM);
+                for (let i = 0; i < LATENT_DIM; i++) {
+                    this.z[i] = randNormal() * 1.2;
+                    this.velocity[i] = randNormal() * 0.01;
+                }
+            }
+
+            step(baseSpeed = 0.04) {
+                const pullToCenter = 0.012;
+                const friction = 0.88;
+                for (let i = 0; i < LATENT_DIM; i++) {
+                    this.velocity[i] = this.velocity[i] * friction + randNormal() * baseSpeed - this.z[i] * pullToCenter * 0.01;
+                    this.z[i] += this.velocity[i];
+                    if (this.z[i] > 5.5) this.z[i] -= (this.z[i] - 5.5) * 0.08;
+                    if (this.z[i] < -5.5) this.z[i] -= (this.z[i] + 5.5) * 0.08;
+                }
+            }
+
+            jump(amount = 0.9) {
+                for (let i = 0; i < LATENT_DIM; i++) {
+                    this.z[i] += randNormal() * amount;
+                    this.velocity[i] = randNormal() * 0.02;
+                }
+            }
+
+            getPhysicalParams(decoder) {
+                const forwardState = decoder.forward(this.z);
+                const raw = forwardState.out;
+
+                const colorThreshold = raw[0] * 0.85;
+                const colorTemperature = 0.70 + sigmoid(raw[1]) * 1.50;
+                const decodedColorTarget = 1 + Math.floor(sigmoid(raw[2]) * 31.999);
+                const requestedColorCount = colorLimit > 0 ? colorLimit : decodedColorTarget;
+                const stepMod = 0.006 + sigmoid(raw[3]) * 0.014;
+                const zSpread = 0.15 + sigmoid(raw[4]) * 0.85;
+                const globalZBias = tanh(raw[5]) * 0.25;
+                const accentBias = sigmoid(raw[6]);
+                const whitespaceBias = sigmoid(raw[7]) * 0.08;
+
+                const vDensity = 0.006 + sigmoid(raw[8]) * 0.11;
+                const vWidthMean = 0.45 + sigmoid(raw[9]) * 1.85;
+                const vWidthJitter = 0.25 + sigmoid(raw[10]) * 1.75;
+                const vSkipRate = sigmoid(raw[11]) * 0.28;
+                const vMinWidth = 0.003 + sigmoid(raw[12]) * 0.014;
+                const vClusterBias = sigmoid(raw[13]) * 2.2;
+                const vZBias = tanh(raw[14]) * 0.35;
+                const vPaletteBias = tanh(raw[15]);
+
+                const hDensity = 0.006 + sigmoid(raw[16]) * 0.11;
+                const hWidthMean = 0.45 + sigmoid(raw[17]) * 1.85;
+                const hWidthJitter = 0.25 + sigmoid(raw[18]) * 1.75;
+                const hSkipRate = sigmoid(raw[19]) * 0.28;
+                const hMinWidth = 0.003 + sigmoid(raw[20]) * 0.014;
+                const hClusterBias = sigmoid(raw[21]) * 2.2;
+                const hZBias = tanh(raw[22]) * 0.35;
+                const hPaletteBias = tanh(raw[23]);
+
+                // 保留这个变量但绘制时只做像素级微扩张，不做模糊。
+                const edgeExpand = Math.round(sigmoid(raw[24]) * 1.0);
+                const familyBalance = sigmoid(raw[25]);
+                const randomTempo = 0.035 + sigmoid(raw[26]) * 0.62;
+                const randomPhaseBias = tanh(raw[27]) * 8.0;
+                const randomPhaseWarp = sigmoid(raw[28]) * 22.0;
+
+                const energies = [];
+                let activeIndices = [];
+                let maxEnergy = -Infinity;
+                let maxIdx = 0;
+
+                for (let i = 0; i < 32; i++) {
+                    const energy = raw[32 + i] / colorTemperature;
+                    energies.push(energy);
+
+                    if (energy > maxEnergy) {
+                        maxEnergy = energy;
+                        maxIdx = i;
+                    }
+
+                    if (energy > colorThreshold) activeIndices.push(i);
+                }
+
+                if (colorLimit > 0) {
+                    activeIndices = energies
+                        .map((energy, idx) => ({ idx, energy }))
+                        .sort((a, b) => b.energy - a.energy)
+                        .slice(0, requestedColorCount)
+                        .map(x => x.idx);
+                } else {
+                    if (activeIndices.length === 0) activeIndices.push(maxIdx);
+
+                    if (activeIndices.length > requestedColorCount) {
+                        activeIndices = activeIndices
+                            .map(idx => ({ idx, energy: energies[idx] }))
+                            .sort((a, b) => b.energy - a.energy)
+                            .slice(0, requestedColorCount)
+                            .map(x => x.idx);
+                    }
+                }
+
+                if (manualPaletteIndices.length > 0) {
+                    activeIndices = manualPaletteIndices.slice();
+                }
+
+                return {
+                    paletteIndices: activeIndices,
+                    energies,
+                    colorThreshold,
+                    colorTemperature,
+                    activeColorCap: requestedColorCount,
+                    stepMod,
+                    zSpread,
+                    globalZBias,
+                    accentBias,
+                    whitespaceBias,
+                    vDensity,
+                    vWidthMean,
+                    vWidthJitter,
+                    vSkipRate,
+                    vMinWidth,
+                    vClusterBias,
+                    vZBias,
+                    vPaletteBias,
+                    hDensity,
+                    hWidthMean,
+                    hWidthJitter,
+                    hSkipRate,
+                    hMinWidth,
+                    hClusterBias,
+                    hZBias,
+                    hPaletteBias,
+                    edgeExpand,
+                    familyBalance,
+                    randomTempo,
+                    randomPhaseBias,
+                    randomPhaseWarp,
+                    _forwardState: forwardState
+                };
+            }
+        }
+
+        function getCanvas() {
+            return document.getElementById('main-canvas');
+        }
+
+        function updateText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.innerText = value;
+        }
+
+        const UI_TEXT = {
+            en: {
+                pause: 'PAUSE',
+                resume: 'RESUME',
+                reset: 'REBOOT UNIVERSE',
+                jump: 'LATENT JUMP',
+                exhibit: 'EXHIBIT MODE',
+                studio: 'STUDIO MODE',
+                save: 'SAVE PNG',
+                language: '中文',
+                colors: 'COLORS',
+                random: 'RANDOM',
+                palette: 'PALETTE',
+                auto: 'AUTO',
+                latentMap: 'LATENT MAP',
+                decoderView: 'DECODER VIEW'
+            },
+            zh: {
+                pause: '暂停',
+                resume: '继续',
+                reset: '重启宇宙',
+                jump: '隐空间跳跃',
+                exhibit: '展览模式',
+                studio: '工作室模式',
+                save: '保存 PNG',
+                language: 'EN',
+                colors: '颜色',
+                random: '随机',
+                palette: '色板',
+                auto: '自动',
+                latentMap: '隐空间图',
+                decoderView: '解码器视图'
+            }
+        };
+
+        function t(key) {
+            return UI_TEXT[currentLanguage][key] || UI_TEXT.en[key] || key;
+        }
+
+        function applyLanguage() {
+            updateText('reset-btn', t('reset'));
+            updateText('jump-btn', t('jump'));
+            updateText('save-btn', t('save'));
+            updateText('lang-btn', t('language'));
+            updateText('palette-label', t('palette'));
+            updateText('palette-auto-btn', t('auto'));
+
+            const colorLabel = document.getElementById('color-label');
+            if (colorLabel) colorLabel.firstChild.nodeValue = `${t('colors')} `;
+            const randomLabel = document.getElementById('random-label');
+            if (randomLabel) randomLabel.firstChild.nodeValue = `${t('random')} `;
+
+            const titles = document.querySelectorAll('.viz-title');
+            if (titles[0]) titles[0].innerText = t('latentMap');
+            if (titles[1]) titles[1].innerText = t('decoderView');
+            setPausedVisual(isPaused);
+            setExhibitionMode(isExhibitionMode, false);
+            syncControlUI(false);
+        }
+
+        function toggleLanguage() {
+            currentLanguage = currentLanguage === 'en' ? 'zh' : 'en';
+            applyLanguage();
+            saveState();
+        }
+
+        function initMatrixUI() {
+            const container = document.getElementById('matrix-container');
+            if (!container) return;
+            container.innerHTML = '';
+            for (let i = 0; i < LATENT_DIM; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'latent-cell';
+                cell.id = `cell-${i}`;
+                container.appendChild(cell);
+            }
+        }
+
+        function updateMatrixUI(entity) {
+            if (!entity) return;
+            for (let i = 0; i < LATENT_DIM; i++) {
+                const cell = document.getElementById(`cell-${i}`);
+                if (!cell) continue;
+
+                const val = entity.z[i];
+                const normalized = clamp((val + 5.5) / 11, 0, 1);
+
+                if (val > 1) {
+                    cell.style.backgroundColor = `rgba(16, 185, 129, ${normalized})`;
+                } else if (val < -1) {
+                    cell.style.backgroundColor = `rgba(239, 68, 68, ${1 - normalized})`;
+                } else {
+                    cell.style.backgroundColor = `rgba(255, 255, 255, ${normalized * 0.22})`;
+                }
+            }
+        }
+
+        function buildFamilyWeights(indices, energies, familyBias) {
+            const exponent = familyBias >= 0 ? 1 + familyBias * 1.8 : 1 + familyBias * 0.6;
+            const weights = indices.map(idx => {
+                const e = Math.max(energies[idx], -4);
+                return Math.pow(sigmoid(e * 1.4) + 0.001, exponent);
+            });
+            let total = weights.reduce((a, b) => a + b, 0);
+            if (total <= 0) total = 1;
+            return { weights, total };
+        }
+
+        function pickWeightedIndex(indices, familyWeightInfo, accentBias, randomUnit = Math.random) {
+            const { weights, total } = familyWeightInfo;
+            if (randomUnit() < accentBias) return indices[0];
+
+            let r = randomUnit() * total;
+            for (let i = 0; i < indices.length; i++) {
+                r -= weights[i];
+                if (r <= 0) return indices[i];
+            }
+            return indices[indices.length - 1];
+        }
+
+        function createColorPicker(indices, energies, familyBias, accentBias, sampler = null) {
+            const sorted = [...indices].sort((a, b) => energies[b] - energies[a]);
+            const familyWeightInfo = buildFamilyWeights(sorted, energies, familyBias);
+            return function pickColor(salt = 'color') {
+                const randomUnit = sampler ? () => sampler(salt) : Math.random;
+                const idx = pickWeightedIndex(sorted, familyWeightInfo, accentBias, randomUnit);
+                return FULL_PALETTE[idx];
+            };
+        }
+
+        function generateStripes(dir, span, config, pickColor, globalConfig, sampler = null) {
+            const stripes = [];
+            const combinedSkip = clamp(config.skipRate + globalConfig.whitespaceBias, 0, 0.42);
+            let current = 0;
+            let stripeIndex = 0;
+
+            while (current < span) {
+                const widthNoise = sampler ? sampler(`width:${stripeIndex}`) : Math.random();
+                const sampled = span * config.density * config.widthMean * (
+                    0.35 + Math.pow(widthNoise, 1 + config.clusterBias) * config.widthJitter
+                );
+
+                const minWidthPx = Math.max(1, Math.round(span * config.minWidth));
+                const rawEnd = Math.min(span, current + Math.max(sampled, minWidthPx));
+
+                // 关键修复：像素对齐，避免浮点边界被抗锯齿露出背景白缝。
+                const startPx = Math.round(current);
+                let endPx = Math.round(rawEnd);
+
+                if (endPx <= startPx) endPx = startPx + 1;
+
+                const stripeSize = endPx - startPx;
+                if (stripeSize <= 0) break;
+
+                const keepNoise = sampler ? sampler(`keep:${stripeIndex}`) : Math.random();
+                if (keepNoise > combinedSkip) {
+                    stripes.push({
+                        dir,
+                        pos: startPx,
+                        size: stripeSize,
+                        color: pickColor(`color:${stripeIndex}`),
+                        z: (sampler ? sampler(`z:${stripeIndex}`) : Math.random()) * globalConfig.zSpread + config.zBias + globalConfig.globalZBias
+                    });
+                }
+
+                current = rawEnd;
+                stripeIndex++;
+            }
+
+            return stripes;
+        }
+
+        function drawLatentMap(currentPoint) {
+            const canvas = document.getElementById('latent-map-canvas');
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.imageSmoothingEnabled = false;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = '#0b0b0b';
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(w / 2, 0);
+            ctx.lineTo(w / 2, h);
+            ctx.moveTo(0, h / 2);
+            ctx.lineTo(w, h / 2);
+            ctx.stroke();
+
+            let maxAbs = 1;
+            for (const p of latentTrail) {
+                maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
+            }
+
+            const scale = 0.42 * Math.min(w, h) / maxAbs;
+            latentMapViewport.scale = scale;
+            latentMapViewport.maxAbs = maxAbs;
+            const mapX = x => w / 2 + x * scale;
+            const mapY = y => h / 2 - y * scale;
+
+            let maxSpeed = 1e-6;
+            for (const p of latentTrail) maxSpeed = Math.max(maxSpeed, p.speed || 0);
+
+            if (latentTrail.length > 1) {
+                ctx.lineWidth = 2;
+                for (let i = 1; i < latentTrail.length; i++) {
+                    const a = latentTrail[i - 1];
+                    const b = latentTrail[i];
+                    const speedT = clamp((b.speed || 0) / maxSpeed, 0, 1);
+                    ctx.beginPath();
+                    ctx.moveTo(mapX(a.x), mapY(a.y));
+                    ctx.lineTo(mapX(b.x), mapY(b.y));
+                    ctx.strokeStyle = scientificColor(speedT, 0.78);
+                    ctx.stroke();
+                }
+            }
+
+            ctx.beginPath();
+            ctx.arc(mapX(currentPoint.x), mapY(currentPoint.y), 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(mapX(currentPoint.x), mapY(currentPoint.y), 7, 0, Math.PI * 2);
+            ctx.strokeStyle = '#10b981';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        function drawDecoderView(forwardState) {
+            const canvas = document.getElementById('decoder-canvas');
+            if (!canvas || !forwardState) return;
+
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.imageSmoothingEnabled = false;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = '#0b0b0b';
+            ctx.fillRect(0, 0, w, h);
+
+            const panelCell = 6;
+            const panelY = 48;
+            const prev = previousDecoderState;
+            const layers = [
+                { key: 'latent', label: 'Z', dim: LATENT_DIM, values: forwardState.latent, prev: prev && prev.latent, cols: 12, rows: 16, x: 16 },
+                { key: 'h1', label: 'H1', dim: HIDDEN_1, values: forwardState.h1, prev: prev && prev.h1, cols: 12, rows: 8, x: 116 },
+                { key: 'h2', label: 'H2', dim: HIDDEN_2, values: forwardState.h2, prev: prev && prev.h2, cols: 8, rows: 8, x: 216 },
+                { key: 'out', label: 'OUT', dim: OUT_DIM, values: forwardState.out, prev: prev && prev.out, cols: 8, rows: 8, x: 316 }
+            ];
+
+            function maxAbs(values) {
+                let m = 1e-6;
+                for (const v of values) m = Math.max(m, Math.abs(v));
+                return m;
+            }
+
+            for (const layer of layers) {
+                ctx.fillStyle = '#9ca3af';
+                ctx.font = '10px monospace';
+                ctx.fillText(`${layer.label} ${layer.dim}`, layer.x, 20);
+
+                const panelHeight = layer.rows * panelCell;
+                const panelWidth = layer.cols * panelCell;
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.strokeRect(
+                    layer.x - 1,
+                    panelY - 1,
+                    panelWidth + 1,
+                    panelHeight + 1
+                );
+
+                const m = maxAbs(layer.values);
+                let maxDelta = 1e-6;
+                if (layer.prev) {
+                    for (let i = 0; i < layer.values.length; i++) {
+                        maxDelta = Math.max(maxDelta, Math.abs(layer.values[i] - layer.prev[i]));
+                    }
+                }
+
+                const slots = layer.cols * layer.rows;
+
+                for (let i = 0; i < slots; i++) {
+                    if (i >= layer.values.length) continue;
+
+                    const v = layer.values[i];
+                    const signed = clamp(v / m, -1, 1);
+                    const delta = layer.prev ? Math.abs(v - layer.prev[i]) / maxDelta : 0;
+                    const colorT = clamp((signed + 1) / 2 + delta * 0.16, 0, 1);
+                    const alpha = 0.76 + delta * 0.24;
+                    const col = i % layer.cols;
+                    const row = Math.floor(i / layer.cols);
+
+                    ctx.fillStyle = scientificColor(colorT, alpha);
+                    ctx.fillRect(
+                        layer.x + col * panelCell,
+                        panelY + row * panelCell,
+                        panelCell - 1,
+                        panelCell - 1
+                    );
+                }
+            }
+
+            previousDecoderState = {
+                latent: new Float32Array(forwardState.latent),
+                h1: new Float32Array(forwardState.h1),
+                h2: new Float32Array(forwardState.h2),
+                out: new Float32Array(forwardState.out)
+            };
+        }
+
+        function drawArt(canvas, entity) {
+            if (!canvas || !entity || !universeDecoder) return;
+
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+
+            const w = canvas.width;
+            const h = canvas.height;
+            const params = entity.getPhysicalParams(universeDecoder);
+            lastParams = params;
+            lastForwardState = params._forwardState;
+            lastActivePaletteIndices = params.paletteIndices.slice();
+            updatePaletteUI();
+
+            const currentPoint = projectLatentTo2D(entity.z);
+            pushLatentTrail(currentPoint);
+            drawLatentMap(currentPoint);
+            drawDecoderView(lastForwardState);
+
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#fafafa';
+            ctx.fillRect(0, 0, w, h);
+
+            const vSampler = createStableSampler('vertical', params);
+            const hSampler = createStableSampler('horizontal', params);
+            const vPickColor = createColorPicker(params.paletteIndices, params.energies, params.vPaletteBias, params.accentBias, salt => vSampler(`palette:${salt}`));
+            const hPickColor = createColorPicker(params.paletteIndices, params.energies, params.hPaletteBias, params.accentBias, salt => hSampler(`palette:${salt}`));
+
+            const verticalStripes = generateStripes(
+                'vertical',
+                w,
+                {
+                    density: params.vDensity * STRIPE_DENSITY_SCALE * (0.75 + params.familyBalance * 0.5),
+                    widthMean: params.vWidthMean,
+                    widthJitter: params.vWidthJitter,
+                    skipRate: params.vSkipRate,
+                    minWidth: params.vMinWidth,
+                    clusterBias: params.vClusterBias,
+                    zBias: params.vZBias
+                },
+                vPickColor,
+                {
+                    whitespaceBias: params.whitespaceBias,
+                    zSpread: params.zSpread,
+                    globalZBias: params.globalZBias
+                },
+                vSampler
+            );
+
+            const horizontalStripes = generateStripes(
+                'horizontal',
+                h,
+                {
+                    density: params.hDensity * STRIPE_DENSITY_SCALE * (1.25 - params.familyBalance * 0.5),
+                    widthMean: params.hWidthMean,
+                    widthJitter: params.hWidthJitter,
+                    skipRate: params.hSkipRate,
+                    minWidth: params.hMinWidth,
+                    clusterBias: params.hClusterBias,
+                    zBias: params.hZBias
+                },
+                hPickColor,
+                {
+                    whitespaceBias: params.whitespaceBias,
+                    zSpread: params.zSpread,
+                    globalZBias: params.globalZBias
+                },
+                hSampler
+            );
+
+            let allStripes = [];
+            if (axisMode === 'both' || axisMode === 'x') allStripes = allStripes.concat(verticalStripes);
+            if (axisMode === 'both' || axisMode === 'y') allStripes = allStripes.concat(horizontalStripes);
+
+            if (allStripes.length < 3) {
+                if (axisMode === 'both' || axisMode === 'x') {
+                    allStripes.push({ dir: 'vertical', pos: 0, size: Math.round(w * 0.28), color: FULL_PALETTE[0], z: 0 });
+                }
+                if (axisMode === 'both' || axisMode === 'y') {
+                    allStripes.push({ dir: 'horizontal', pos: Math.round(h * 0.2), size: Math.round(h * 0.38), color: FULL_PALETTE[6], z: 1 });
+                }
+            }
+
+            allStripes.sort((a, b) => a.z - b.z);
+
+            ctx.globalAlpha = 1;
+            for (const s of allStripes) {
+                ctx.fillStyle = s.color;
+
+                if (s.dir === 'vertical') {
+                    ctx.fillRect(
+                        Math.round(s.pos),
+                        0,
+                        Math.max(1, Math.round(s.size + params.edgeExpand)),
+                        h
+                    );
+                } else {
+                    ctx.fillRect(
+                        0,
+                        Math.round(s.pos),
+                        w,
+                        Math.max(1, Math.round(s.size + params.edgeExpand))
+                    );
+                }
+            }
+
+            updateText('param-colors', params.paletteIndices.length);
+            updateText('param-step', params.stepMod.toFixed(3));
+            updateText('param-vdens', params.vDensity.toFixed(3));
+            updateText('param-hdens', params.hDensity.toFixed(3));
+            updateText('param-vskip', params.vSkipRate.toFixed(2));
+            updateText('param-hskip', params.hSkipRate.toFixed(2));
+            updateText('param-z', params.zSpread.toFixed(2));
+            updateText('param-random', randomnessLevel.toFixed(2));
+            updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
+            updateText('param-speed', lastLatentSpeed.toFixed(2));
+        }
+
+        function loop(timestamp) {
+            if (isPaused) return;
+
+            if (!currentEntity || !universeDecoder) {
+                animationId = requestAnimationFrame(loop);
+                return;
+            }
+
+            if (timestamp - lastFrameTime >= FRAME_DELAY) {
+                lastFrameTime = timestamp;
+                const speed = (lastParams ? lastParams.stepMod : 0.04) * randomnessLevel;
+                if (speed > 0) {
+                    currentEntity.step(speed);
+                    generationCount++;
+                    drawArt(getCanvas(), currentEntity);
+                    updateText('gen-counter', generationCount);
+                    updateMatrixUI(currentEntity);
+                    maybePersistState();
+                }
+            }
+
+            animationId = requestAnimationFrame(loop);
+        }
+
+        function startAnimation() {
+            if (animationId !== null) cancelAnimationFrame(animationId);
+            lastFrameTime = performance.now();
+            animationId = requestAnimationFrame(loop);
+        }
+
+        function setPausedVisual(paused) {
+            const btn = document.getElementById('pause-btn');
+            const indicator = document.querySelector('.status-indicator');
+
+            if (paused) {
+                if (btn) {
+                    btn.innerText = t('resume');
+                    btn.style.color = '#ef4444';
+                    btn.style.borderColor = '#ef4444';
+                }
+                if (indicator) {
+                    indicator.style.backgroundColor = '#ef4444';
+                    indicator.style.boxShadow = '0 0 10px #ef4444';
+                }
+            } else {
+                if (btn) {
+                    btn.innerText = t('pause');
+                    btn.style.color = '#d1d5db';
+                    btn.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                }
+                if (indicator) {
+                    indicator.style.backgroundColor = '#10b981';
+                    indicator.style.boxShadow = '0 0 10px #10b981';
+                }
+            }
+        }
+
+        function togglePause() {
+            isPaused = !isPaused;
+            setPausedVisual(isPaused);
+
+            if (isPaused) {
+                if (animationId !== null) {
+                    cancelAnimationFrame(animationId);
+                    animationId = null;
+                }
+            } else {
+                startAnimation();
+            }
+
+            saveState();
+        }
+
+        function serializeArray(arr) {
+            return Array.from(arr, v => Number(v.toFixed(6)));
+        }
+
+        function loadArray(target, source) {
+            if (Array.isArray(source) && source.length === target.length) {
+                target.set(source);
+                return true;
+            }
+            return false;
+        }
+
+        function serializeDecoder(decoder) {
+            if (!decoder) return null;
+            return {
+                w1: serializeArray(decoder.w1),
+                b1: serializeArray(decoder.b1),
+                w2: serializeArray(decoder.w2),
+                b2: serializeArray(decoder.b2),
+                w3: serializeArray(decoder.w3),
+                b3: serializeArray(decoder.b3)
+            };
+        }
+
+        function restoreDecoder(data) {
+            const decoder = new DecoderNetwork();
+            if (!data) return decoder;
+            loadArray(decoder.w1, data.w1);
+            loadArray(decoder.b1, data.b1);
+            loadArray(decoder.w2, data.w2);
+            loadArray(decoder.b2, data.b2);
+            loadArray(decoder.w3, data.w3);
+            loadArray(decoder.b3, data.b3);
+            return decoder;
+        }
+
+        function serializeEntity(entity) {
+            if (!entity) return null;
+            return {
+                z: serializeArray(entity.z),
+                velocity: serializeArray(entity.velocity)
+            };
+        }
+
+        function restoreEntity(data) {
+            const entity = new LatentEntity();
+            if (!data) return entity;
+            loadArray(entity.z, data.z);
+            loadArray(entity.velocity, data.velocity);
+            return entity;
+        }
+
+        function saveState() {
+            if (!window.localStorage || !currentEntity || !universeDecoder) return;
+            try {
+                const state = {
+                    version: 3,
+                    universeSeed,
+                    generationCount,
+                    isExhibitionMode,
+                    colorLimit,
+                    randomnessLevel,
+                    axisMode,
+                    manualPaletteIndices,
+                    currentLanguage,
+                    entity: serializeEntity(currentEntity),
+                    decoder: serializeDecoder(universeDecoder)
+                };
+                window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            } catch (err) {
+                console.warn('[State] Save skipped:', err.message);
+            }
+        }
+
+        function maybePersistState() {
+            if (generationCount - lastPersistFrame < 48) return;
+            lastPersistFrame = generationCount;
+            saveState();
+        }
+
+        function restoreSavedState() {
+            if (!window.localStorage) return false;
+            try {
+                const raw = window.localStorage.getItem(STORAGE_KEY);
+                if (!raw) return false;
+                const state = JSON.parse(raw);
+                if (!state || state.version !== 3) return false;
+
+                universeSeed = Number.isFinite(state.universeSeed) ? state.universeSeed >>> 0 : createUniverseSeed();
+                universeDecoder = restoreDecoder(state.decoder);
+                currentEntity = restoreEntity(state.entity);
+                generationCount = Number.isFinite(state.generationCount) ? Math.max(0, Math.floor(state.generationCount)) : 0;
+                isExhibitionMode = Boolean(state.isExhibitionMode);
+                colorLimit = Number.isFinite(state.colorLimit) ? clamp(Math.floor(state.colorLimit), 0, 32) : 0;
+                randomnessLevel = Number.isFinite(state.randomnessLevel) ? clamp(state.randomnessLevel, 0, 1) : 0.4;
+                axisMode = ['both', 'x', 'y'].includes(state.axisMode) ? state.axisMode : 'both';
+                manualPaletteIndices = Array.isArray(state.manualPaletteIndices)
+                    ? state.manualPaletteIndices.map(x => Math.floor(x)).filter(x => x >= 0 && x < FULL_PALETTE.length)
+                    : [];
+                currentLanguage = state.currentLanguage === 'zh' ? 'zh' : 'en';
+                lastPersistFrame = generationCount;
+                return true;
+            } catch (err) {
+                console.warn('[State] Restore skipped:', err.message);
+                return false;
+            }
+        }
+
+        function setExhibitionMode(enabled, shouldSave = true) {
+            isExhibitionMode = enabled;
+            document.body.classList.toggle('exhibition', enabled);
+
+            const btn = document.getElementById('mode-btn');
+            if (btn) btn.innerText = enabled ? t('studio') : t('exhibit');
+
+            if (shouldSave) saveState();
+        }
+
+        function toggleExhibitionMode() {
+            setExhibitionMode(!isExhibitionMode);
+        }
+
+        function syncControlUI() {
+            const colorInput = document.getElementById('color-count');
+            if (colorInput) colorInput.value = String(colorLimit);
+            const randomInput = document.getElementById('randomness');
+            const randomValue = Math.round(randomnessLevel * 100);
+            if (randomInput) randomInput.value = String(randomValue);
+            updateText('color-count-value', colorLimit === 0 ? 'AUTO' : colorLimit);
+            updateText('param-color-limit', colorLimit === 0 ? 'AUTO' : colorLimit);
+            updateText('randomness-value', randomValue);
+            updateText('param-random', randomnessLevel.toFixed(2));
+            updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
+            updatePaletteUI();
+
+            const axisButtons = {
+                both: document.getElementById('axis-both-btn'),
+                x: document.getElementById('axis-x-btn'),
+                y: document.getElementById('axis-y-btn')
+            };
+
+            for (const [mode, btn] of Object.entries(axisButtons)) {
+                if (btn) btn.classList.toggle('active', axisMode === mode);
+            }
+        }
+
+        function setColorLimit(value) {
+            colorLimit = clamp(Math.floor(Number(value) || 0), 0, 32);
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function setRandomness(value) {
+            randomnessLevel = clamp((Number(value) || 0) / 100, 0, 1);
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function setAxisMode(mode) {
+            if (!['both', 'x', 'y'].includes(mode)) return;
+            axisMode = mode;
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function initPaletteUI() {
+            const container = document.getElementById('palette-swatches');
+            if (!container) return;
+            container.innerHTML = '';
+
+            FULL_PALETTE.forEach((color, idx) => {
+                const swatch = document.createElement('button');
+                swatch.type = 'button';
+                swatch.className = 'palette-swatch';
+                swatch.style.backgroundColor = color;
+                swatch.title = `${idx + 1}: ${color}`;
+                swatch.dataset.index = String(idx);
+                swatch.addEventListener('click', () => toggleManualPaletteIndex(idx));
+                container.appendChild(swatch);
+            });
+
+            updatePaletteUI();
+        }
+
+        function updatePaletteUI() {
+            const container = document.getElementById('palette-swatches');
+            if (!container) return;
+
+            const selected = new Set(manualPaletteIndices);
+            const active = new Set(lastActivePaletteIndices);
+            const hasManual = manualPaletteIndices.length > 0;
+
+            for (const swatch of container.querySelectorAll('.palette-swatch')) {
+                const idx = Number(swatch.dataset.index);
+                swatch.classList.toggle('manual', selected.has(idx));
+                swatch.classList.toggle('active', hasManual ? selected.has(idx) : active.has(idx));
+            }
+
+            const autoBtn = document.getElementById('palette-auto-btn');
+            if (autoBtn) autoBtn.classList.toggle('active', !hasManual);
+        }
+
+        function toggleManualPaletteIndex(idx) {
+            const existing = manualPaletteIndices.indexOf(idx);
+            if (existing >= 0) manualPaletteIndices.splice(existing, 1);
+            else manualPaletteIndices.push(idx);
+            manualPaletteIndices.sort((a, b) => a - b);
+
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function clearManualPalette() {
+            manualPaletteIndices = [];
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function exportMainCanvas() {
+            const canvas = getCanvas();
+            if (!canvas) return;
+
+            const link = document.createElement('a');
+            link.download = `latent-art-${String(generationCount).padStart(6, '0')}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+
+        function jumpToLatentMap(event) {
+            if (!currentEntity || !latentProjector.x || !latentProjector.y) return;
+
+            const canvas = event.currentTarget;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (event.clientX - rect.left) * scaleX;
+            const y = (event.clientY - rect.top) * scaleY;
+            const scale = latentMapViewport.scale || 1;
+            const targetX = (x - canvas.width / 2) / scale;
+            const targetY = (canvas.height / 2 - y) / scale;
+            const current = projectLatentTo2D(currentEntity.z);
+            const dx = clamp(targetX - current.x, -3, 3);
+            const dy = clamp(targetY - current.y, -3, 3);
+
+            for (let i = 0; i < LATENT_DIM; i++) {
+                currentEntity.z[i] += latentProjector.x[i] * dx + latentProjector.y[i] * dy;
+                currentEntity.velocity[i] *= 0.25;
+            }
+
+            generationCount++;
+            drawArt(getCanvas(), currentEntity);
+            updateText('gen-counter', generationCount);
+            updateMatrixUI(currentEntity);
+            saveState();
+        }
+
+        function hardReset() {
+            universeSeed = createUniverseSeed();
+            universeDecoder = new DecoderNetwork();
+            currentEntity = new LatentEntity();
+            generationCount = 0;
+            lastParams = null;
+            lastForwardState = null;
+            previousDecoderState = null;
+            latentTrail.length = 0;
+            lastPersistFrame = 0;
+            randomizeRuntimeControls();
+            manualPaletteIndices = [];
+            colorLimit = 0;
+
+            updateText('gen-counter', generationCount);
+            syncControlUI();
+            updateMatrixUI(currentEntity);
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+
+            if (!isPaused) startAnimation();
+        }
+
+        function jumpLatentRegion() {
+            if (!currentEntity) return;
+            currentEntity.jump(0.55);
+            latentTrail.length = 0;
+            previousDecoderState = null;
+            drawArt(getCanvas(), currentEntity);
+            updateMatrixUI(currentEntity);
+            saveState();
+        }
+
+        function bindControls() {
+            const pauseBtn = document.getElementById('pause-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            const jumpBtn = document.getElementById('jump-btn');
+            const modeBtn = document.getElementById('mode-btn');
+            const saveBtn = document.getElementById('save-btn');
+            const langBtn = document.getElementById('lang-btn');
+            const colorInput = document.getElementById('color-count');
+            const randomnessInput = document.getElementById('randomness');
+            const axisBothBtn = document.getElementById('axis-both-btn');
+            const axisXBtn = document.getElementById('axis-x-btn');
+            const axisYBtn = document.getElementById('axis-y-btn');
+            const paletteAutoBtn = document.getElementById('palette-auto-btn');
+            const latentMapCanvas = document.getElementById('latent-map-canvas');
+
+            if (pauseBtn) pauseBtn.addEventListener('click', togglePause);
+            if (resetBtn) resetBtn.addEventListener('click', hardReset);
+            if (jumpBtn) jumpBtn.addEventListener('click', jumpLatentRegion);
+            if (modeBtn) modeBtn.addEventListener('click', toggleExhibitionMode);
+            if (saveBtn) saveBtn.addEventListener('click', exportMainCanvas);
+            if (langBtn) langBtn.addEventListener('click', toggleLanguage);
+            if (colorInput) colorInput.addEventListener('input', event => setColorLimit(event.target.value));
+            if (randomnessInput) randomnessInput.addEventListener('input', event => setRandomness(event.target.value));
+            if (axisBothBtn) axisBothBtn.addEventListener('click', () => setAxisMode('both'));
+            if (axisXBtn) axisXBtn.addEventListener('click', () => setAxisMode('x'));
+            if (axisYBtn) axisYBtn.addEventListener('click', () => setAxisMode('y'));
+            if (paletteAutoBtn) paletteAutoBtn.addEventListener('click', clearManualPalette);
+            if (latentMapCanvas) latentMapCanvas.addEventListener('click', jumpToLatentMap);
+        }
+
+        function runSelfTests() {
+            const decoder = new DecoderNetwork();
+            const entity = new LatentEntity();
+
+            assert(decoder instanceof DecoderNetwork, 'DecoderNetwork should initialize');
+            assert(entity instanceof LatentEntity, 'LatentEntity should initialize');
+            assert(entity.z.length === LATENT_DIM, 'Latent vector dimension should match LATENT_DIM');
+            assert(entity.velocity.length === LATENT_DIM, 'Velocity vector dimension should match LATENT_DIM');
+
+            const output = decoder.decode(entity.z);
+            assert(output instanceof Float32Array, 'Decoder output should be Float32Array');
+            assert(output.length === OUT_DIM, 'Decoder output length should match OUT_DIM');
+
+            const forwardState = decoder.forward(entity.z);
+            assert(forwardState.h1.length === HIDDEN_1, 'Forward h1 length should match HIDDEN_1');
+            assert(forwardState.h2.length === HIDDEN_2, 'Forward h2 length should match HIDDEN_2');
+            assert(forwardState.out.length === OUT_DIM, 'Forward out length should match OUT_DIM');
+
+            const beforeStep = entity.z[0];
+            entity.step(0.04);
+            assert(Number.isFinite(entity.z[0]), 'Latent step should keep finite values');
+            assert(beforeStep !== entity.z[0], 'Latent step should change state');
+
+            const params = entity.getPhysicalParams(decoder);
+            assert(Array.isArray(params.paletteIndices), 'Palette index list should be an array');
+            assert(params.paletteIndices.length >= 1, 'Palette should contain at least one active color');
+            assert(params.paletteIndices.length <= 32, 'Palette should be capped at 32 colors');
+            assert(params.vDensity > 0, 'vDensity should be positive');
+            assert(params.hDensity > 0, 'hDensity should be positive');
+            assert(params.stepMod > 0, 'stepMod should be positive');
+            assert(params.vSkipRate >= 0 && params.vSkipRate <= 0.28, 'vSkipRate out of expected range');
+            assert(params.hSkipRate >= 0 && params.hSkipRate <= 0.28, 'hSkipRate out of expected range');
+            assert(params._forwardState && params._forwardState.out.length === OUT_DIM, 'Params should include forward state');
+
+            assert(latentProjector.x instanceof Float32Array, 'latentProjector.x should initialize');
+            assert(latentProjector.y instanceof Float32Array, 'latentProjector.y should initialize');
+
+            const projected = projectLatentTo2D(entity.z);
+            assert(Number.isFinite(projected.x) && Number.isFinite(projected.y), '2D latent projection should be finite');
+
+            const testStripes = generateStripes(
+                'vertical',
+                100,
+                {
+                    density: 0.03,
+                    widthMean: 1.0,
+                    widthJitter: 1.0,
+                    skipRate: 0.0,
+                    minWidth: 0.01,
+                    clusterBias: 1.0,
+                    zBias: 0.0
+                },
+                () => '#000000',
+                {
+                    whitespaceBias: 0.0,
+                    zSpread: 1.0,
+                    globalZBias: 0.0
+                }
+            );
+
+            assert(testStripes.length > 0, 'generateStripes should create stripes');
+            assert(testStripes.every(s => Number.isInteger(s.pos)), 'Stripe positions should be pixel-aligned integers');
+            assert(testStripes.every(s => Number.isInteger(s.size)), 'Stripe sizes should be pixel-aligned integers');
+            assert(testStripes.every(s => s.size >= 1), 'Stripe sizes should be at least 1 pixel');
+
+            const beforeJump = entity.z[1];
+            entity.jump(0.95);
+            assert(Number.isFinite(entity.z[1]), 'Latent jump should keep finite values');
+            assert(beforeJump !== entity.z[1], 'Latent jump should change state');
+
+            assert(typeof hardReset === 'function', 'hardReset should be defined');
+            assert(typeof togglePause === 'function', 'togglePause should be defined');
+            assert(typeof jumpLatentRegion === 'function', 'jumpLatentRegion should be defined');
+
+            const colors = params.paletteIndices.map(idx => FULL_PALETTE[idx]);
+            assert(colors.every(c => typeof c === 'string' && c.startsWith('#')), 'Palette colors should be valid hex strings');
+
+            console.info('[Self-test] All checks passed.');
+        }
+
+        function bootstrap() {
+            if (hasBootstrapped) return;
+            hasBootstrapped = true;
+
+            initMatrixUI();
+            initLatentProjector();
+            initPaletteUI();
+
+            if (!restoreSavedState()) {
+                universeSeed = createUniverseSeed();
+                universeDecoder = new DecoderNetwork();
+                currentEntity = new LatentEntity();
+                generationCount = 0;
+                colorLimit = 0;
+                randomizeRuntimeControls();
+                manualPaletteIndices = [];
+                axisMode = 'both';
+                isExhibitionMode = false;
+                currentLanguage = 'en';
+            }
+
+            lastParams = null;
+            lastForwardState = null;
+            previousDecoderState = null;
+            isPaused = false;
+
+            bindControls();
+            setPausedVisual(false);
+            setExhibitionMode(isExhibitionMode, false);
+            applyLanguage();
+            syncControlUI();
+            updateText('gen-counter', generationCount);
+            updateMatrixUI(currentEntity);
+            drawArt(getCanvas(), currentEntity);
+            runSelfTests();
+            startAnimation();
+        }
+
+        window.togglePause = togglePause;
+        window.hardReset = hardReset;
+        window.jumpLatentRegion = jumpLatentRegion;
+        window.setAxisMode = setAxisMode;
+        window.setColorLimit = setColorLimit;
+        window.setRandomness = setRandomness;
+        window.toggleExhibitionMode = toggleExhibitionMode;
+        window.clearManualPalette = clearManualPalette;
+
+        window.addEventListener('DOMContentLoaded', bootstrap);
+    </script>
+</body>
+</html>
