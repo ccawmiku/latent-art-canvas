@@ -250,14 +250,16 @@
 
         .axis-controls,
         .geometry-controls,
-        .layer-controls {
+        .layer-controls,
+        .activation-controls {
             display: flex;
             gap: 0.35rem;
         }
 
         .axis-controls button,
         .geometry-controls button,
-        .layer-controls button {
+        .layer-controls button,
+        .activation-controls button {
             min-width: 32px;
             padding: 5px 8px;
         }
@@ -425,6 +427,7 @@
             <button class="action-btn" id="mode-btn" type="button">EXHIBIT MODE</button>
             <button class="action-btn" id="save-btn" type="button">SAVE PNG</button>
             <button class="action-btn" id="record-btn" type="button">RECORD ZIP</button>
+            <button class="action-btn" id="universe-batch-btn" type="button">100 UNIVERSES</button>
             <button class="action-btn" id="lang-btn" type="button">中文</button>
             <label class="control-panel" id="frames-label">
                 FRAMES
@@ -457,6 +460,12 @@
                 <button class="action-btn" id="layer-x-btn" type="button">X TOP</button>
                 <button class="action-btn" id="layer-y-btn" type="button">Y TOP</button>
             </div>
+            <div class="control-panel activation-controls" aria-label="activation controls">
+                <button class="action-btn active" id="act-relu-btn" type="button">RELU</button>
+                <button class="action-btn" id="act-leaky-btn" type="button">LEAKY</button>
+                <button class="action-btn" id="act-tanh-btn" type="button">TANH</button>
+                <button class="action-btn" id="act-swish-btn" type="button">SWISH</button>
+            </div>
             <div class="control-panel axis-controls" aria-label="axis controls">
                 <button class="action-btn active" id="axis-both-btn" type="button">XY</button>
                 <button class="action-btn" id="axis-x-btn" type="button">X</button>
@@ -488,6 +497,7 @@
                     <div>RANDOM: <span id="param-random">0.00</span></div>
                     <div>FORM: <span id="param-form">LINE</span></div>
                     <div>LAYER: <span id="param-layer">AUTO</span></div>
+                    <div>ACT: <span id="param-activation">RELU</span></div>
                     <div>AXIS: <span id="param-axis">XY</span></div>
                     <div>SPEED: <span id="param-speed">0.00</span></div>
                 </div>
@@ -519,6 +529,8 @@
         const sigmoid = x => 1 / (1 + Math.exp(-x));
         const relu = x => Math.max(0, x);
         const tanh = x => Math.tanh(x);
+        const leakyRelu = x => x > 0 ? x : x * 0.08;
+        const swish = x => x * sigmoid(x);
         const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
         const lerp = (a, b, t) => a + (b - a) * t;
 
@@ -538,6 +550,7 @@
         let axisMode = 'both';
         let geometryMode = 'linear';
         let layerMode = 'auto';
+        let activationMode = 'relu';
         let manualPaletteIndices = [];
         let lastActivePaletteIndices = [];
         let currentLanguage = 'en';
@@ -550,6 +563,7 @@
         let lastPersistFrame = 0;
         let isRecordingSequence = false;
         let sequenceRecorder = null;
+        let isRecordingUniverseBatch = false;
 
         function randUniform(scale = 1) {
             return (Math.random() * 2 - 1) * scale;
@@ -670,6 +684,20 @@
             if (latentTrail.length > MAX_TRAIL_POINTS) latentTrail.shift();
         }
 
+        function getHiddenActivation() {
+            if (activationMode === 'leaky') return leakyRelu;
+            if (activationMode === 'tanh') return tanh;
+            if (activationMode === 'swish') return swish;
+            return relu;
+        }
+
+        function getActivationLabel() {
+            if (activationMode === 'leaky') return 'LEAKY';
+            if (activationMode === 'tanh') return 'TANH';
+            if (activationMode === 'swish') return 'SWISH';
+            return 'RELU';
+        }
+
         class DecoderNetwork {
             constructor() {
                 this.w1 = initWeight(LATENT_DIM * HIDDEN_1, LATENT_DIM, HIDDEN_1, 1.15);
@@ -699,7 +727,7 @@
 
             forward(latentZ) {
                 const h1 = this.dense(latentZ, LATENT_DIM, HIDDEN_1, this.w1, this.b1, x => tanh(x));
-                const h2 = this.dense(h1, HIDDEN_1, HIDDEN_2, this.w2, this.b2, x => relu(x));
+                const h2 = this.dense(h1, HIDDEN_1, HIDDEN_2, this.w2, this.b2, getHiddenActivation());
                 const out = this.dense(h2, HIDDEN_2, OUT_DIM, this.w3, this.b3, x => x);
                 return { latent: latentZ, h1, h2, out };
             }
@@ -905,6 +933,7 @@
             updateText('jump-btn', t('jump'));
             updateText('save-btn', t('save'));
             updateText('record-btn', 'RECORD ZIP');
+            updateText('universe-batch-btn', '100 UNIVERSES');
             updateText('lang-btn', t('language'));
             updateText('palette-label', t('palette'));
             updateText('palette-auto-btn', t('auto'));
@@ -1477,6 +1506,7 @@
                 updateText('param-random', randomnessLevel.toFixed(2));
                 updateText('param-form', geometryMode === 'radial' ? 'CIRCLE' : 'LINE');
                 updateText('param-layer', getLayerLabel());
+                updateText('param-activation', getActivationLabel());
                 updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
                 updateText('param-speed', lastLatentSpeed.toFixed(2));
             }
@@ -1622,6 +1652,7 @@
                     axisMode,
                     geometryMode,
                     layerMode,
+                    activationMode,
                     manualPaletteIndices,
                     currentLanguage,
                     entity: serializeEntity(currentEntity),
@@ -1657,6 +1688,7 @@
                 axisMode = ['both', 'x', 'y'].includes(state.axisMode) ? state.axisMode : 'both';
                 geometryMode = ['linear', 'radial'].includes(state.geometryMode) ? state.geometryMode : 'linear';
                 layerMode = ['auto', 'xTop', 'yTop'].includes(state.layerMode) ? state.layerMode : 'auto';
+                activationMode = ['relu', 'leaky', 'tanh', 'swish'].includes(state.activationMode) ? state.activationMode : 'relu';
                 manualPaletteIndices = Array.isArray(state.manualPaletteIndices)
                     ? state.manualPaletteIndices.map(x => Math.floor(x)).filter(x => x >= 0 && x < FULL_PALETTE.length)
                     : [];
@@ -1695,6 +1727,7 @@
             updateText('param-random', randomnessLevel.toFixed(2));
             updateText('param-form', geometryMode === 'radial' ? 'CIRCLE' : 'LINE');
             updateText('param-layer', getLayerLabel());
+            updateText('param-activation', getActivationLabel());
             updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
             updatePaletteUI();
 
@@ -1719,6 +1752,17 @@
 
             for (const [mode, btn] of Object.entries(layerButtons)) {
                 if (btn) btn.classList.toggle('active', layerMode === mode);
+            }
+
+            const activationButtons = {
+                relu: document.getElementById('act-relu-btn'),
+                leaky: document.getElementById('act-leaky-btn'),
+                tanh: document.getElementById('act-tanh-btn'),
+                swish: document.getElementById('act-swish-btn')
+            };
+
+            for (const [mode, btn] of Object.entries(activationButtons)) {
+                if (btn) btn.classList.toggle('active', activationMode === mode);
             }
 
             const axisButtons = {
@@ -1765,6 +1809,15 @@
         function setLayerMode(mode) {
             if (!['auto', 'xTop', 'yTop'].includes(mode)) return;
             layerMode = mode;
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function setActivationMode(mode) {
+            if (!['relu', 'leaky', 'tanh', 'swish'].includes(mode)) return;
+            activationMode = mode;
+            previousDecoderState = null;
             syncControlUI();
             drawArt(getCanvas(), currentEntity);
             saveState();
@@ -1825,14 +1878,21 @@
             saveState();
         }
 
-        function exportMainCanvas() {
-            const canvas = getCanvas();
-            if (!canvas) return;
+        async function exportMainCanvas() {
+            if (!currentEntity || !universeDecoder) return;
 
-            const link = document.createElement('a');
-            link.download = `latent-art-${String(generationCount).padStart(6, '0')}.png`;
-            link.href = canvas.toDataURL('image/png');
-            link.click();
+            const outputSize = getNumberInputValue('sequence-size', 2400, 1200, 4096);
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = outputSize;
+            exportCanvas.height = outputSize;
+
+            drawArt(exportCanvas, currentEntity, {
+                updatePanels: false,
+                generationCount
+            });
+
+            const blob = await canvasToPngBlob(exportCanvas);
+            downloadBlob(blob, `latent-art-${String(generationCount).padStart(6, '0')}-${outputSize}px.png`);
         }
 
         function getNumberInputValue(id, fallback, min, max) {
@@ -2088,6 +2148,107 @@
             sequenceRecorder = null;
         }
 
+        function snapshotRuntimeState() {
+            return {
+                universeSeed,
+                universeDecoder,
+                currentEntity,
+                generationCount,
+                colorLimit,
+                randomnessLevel,
+                manualPaletteIndices: manualPaletteIndices.slice(),
+                lastActivePaletteIndices: lastActivePaletteIndices.slice(),
+                lastParams,
+                lastForwardState,
+                previousDecoderState,
+                lastLatentSpeed,
+                latentTrail: latentTrail.map(p => ({ x: p.x, y: p.y, speed: p.speed }))
+            };
+        }
+
+        function restoreRuntimeState(snapshot) {
+            universeSeed = snapshot.universeSeed;
+            universeDecoder = snapshot.universeDecoder;
+            currentEntity = snapshot.currentEntity;
+            generationCount = snapshot.generationCount;
+            colorLimit = snapshot.colorLimit;
+            randomnessLevel = snapshot.randomnessLevel;
+            manualPaletteIndices = snapshot.manualPaletteIndices.slice();
+            lastActivePaletteIndices = snapshot.lastActivePaletteIndices.slice();
+            lastParams = snapshot.lastParams;
+            lastForwardState = snapshot.lastForwardState;
+            previousDecoderState = snapshot.previousDecoderState;
+            lastLatentSpeed = snapshot.lastLatentSpeed;
+            latentTrail.length = 0;
+            for (const p of snapshot.latentTrail) latentTrail.push({ x: p.x, y: p.y, speed: p.speed });
+
+            syncControlUI();
+            updateText('gen-counter', generationCount);
+            updateMatrixUI(currentEntity);
+            drawArt(getCanvas(), currentEntity);
+        }
+
+        async function exportUniverseBatchZip() {
+            if (isRecordingUniverseBatch || isRecordingSequence) return;
+
+            const button = document.getElementById('universe-batch-btn');
+            const outputSize = getNumberInputValue('sequence-size', 2400, 1200, 4096);
+            const captureCanvas = document.createElement('canvas');
+            const entries = [];
+            const snapshot = snapshotRuntimeState();
+
+            captureCanvas.width = outputSize;
+            captureCanvas.height = outputSize;
+            isRecordingUniverseBatch = true;
+
+            if (button) {
+                button.disabled = true;
+                button.innerText = 'UNI 0/100';
+            }
+
+            try {
+                for (let i = 0; i < 100; i++) {
+                    universeSeed = createUniverseSeed();
+                    universeDecoder = new DecoderNetwork();
+                    currentEntity = new LatentEntity();
+                    generationCount = 0;
+                    colorLimit = 0;
+                    manualPaletteIndices = [];
+                    randomizeRuntimeControls();
+
+                    drawArt(captureCanvas, currentEntity, {
+                        updatePanels: false,
+                        generationCount: i
+                    });
+
+                    const blob = await canvasToPngBlob(captureCanvas);
+                    entries.push({
+                        name: `latent-universe-${String(i + 1).padStart(6, '0')}.png`,
+                        data: new Uint8Array(await blob.arrayBuffer())
+                    });
+
+                    if (button) button.innerText = `UNI ${i + 1}/100`;
+                    if (i % 5 === 4) await new Promise(resolve => requestAnimationFrame(resolve));
+                }
+
+                const zip = makeZipBlob(entries);
+                const filename = `latent-universe-batch-${outputSize}px-100.zip`;
+                downloadBlob(zip, filename);
+            } catch (err) {
+                console.error('[Universe batch export] Failed:', err);
+                if (button) button.innerText = 'BATCH FAILED';
+            } finally {
+                restoreRuntimeState(snapshot);
+                isRecordingUniverseBatch = false;
+                if (button) {
+                    setTimeout(() => {
+                        button.disabled = false;
+                        button.innerText = '100 UNIVERSES';
+                    }, 800);
+                }
+            }
+        }
+
         function jumpToLatentMap(event) {
             if (!currentEntity || !latentProjector.x || !latentProjector.y) return;
 
@@ -2130,6 +2291,7 @@
             manualPaletteIndices = [];
             colorLimit = 0;
             layerMode = 'auto';
+            activationMode = 'relu';
 
             updateText('gen-counter', generationCount);
             syncControlUI();
@@ -2157,6 +2319,7 @@
             const modeBtn = document.getElementById('mode-btn');
             const saveBtn = document.getElementById('save-btn');
             const recordBtn = document.getElementById('record-btn');
+            const universeBatchBtn = document.getElementById('universe-batch-btn');
             const langBtn = document.getElementById('lang-btn');
             const colorInput = document.getElementById('color-count');
             const randomnessInput = document.getElementById('randomness');
@@ -2165,6 +2328,10 @@
             const layerAutoBtn = document.getElementById('layer-auto-btn');
             const layerXBtn = document.getElementById('layer-x-btn');
             const layerYBtn = document.getElementById('layer-y-btn');
+            const actReluBtn = document.getElementById('act-relu-btn');
+            const actLeakyBtn = document.getElementById('act-leaky-btn');
+            const actTanhBtn = document.getElementById('act-tanh-btn');
+            const actSwishBtn = document.getElementById('act-swish-btn');
             const axisBothBtn = document.getElementById('axis-both-btn');
             const axisXBtn = document.getElementById('axis-x-btn');
             const axisYBtn = document.getElementById('axis-y-btn');
@@ -2177,6 +2344,7 @@
             if (modeBtn) modeBtn.addEventListener('click', toggleExhibitionMode);
             if (saveBtn) saveBtn.addEventListener('click', exportMainCanvas);
             if (recordBtn) recordBtn.addEventListener('click', toggleSequenceRecording);
+            if (universeBatchBtn) universeBatchBtn.addEventListener('click', exportUniverseBatchZip);
             if (langBtn) langBtn.addEventListener('click', toggleLanguage);
             if (colorInput) colorInput.addEventListener('input', event => setColorLimit(event.target.value));
             if (randomnessInput) randomnessInput.addEventListener('input', event => setRandomness(event.target.value));
@@ -2185,6 +2353,10 @@
             if (layerAutoBtn) layerAutoBtn.addEventListener('click', () => setLayerMode('auto'));
             if (layerXBtn) layerXBtn.addEventListener('click', () => setLayerMode('xTop'));
             if (layerYBtn) layerYBtn.addEventListener('click', () => setLayerMode('yTop'));
+            if (actReluBtn) actReluBtn.addEventListener('click', () => setActivationMode('relu'));
+            if (actLeakyBtn) actLeakyBtn.addEventListener('click', () => setActivationMode('leaky'));
+            if (actTanhBtn) actTanhBtn.addEventListener('click', () => setActivationMode('tanh'));
+            if (actSwishBtn) actSwishBtn.addEventListener('click', () => setActivationMode('swish'));
             if (axisBothBtn) axisBothBtn.addEventListener('click', () => setAxisMode('both'));
             if (axisXBtn) axisXBtn.addEventListener('click', () => setAxisMode('x'));
             if (axisYBtn) axisYBtn.addEventListener('click', () => setAxisMode('y'));
@@ -2314,6 +2486,7 @@
                 axisMode = 'both';
                 geometryMode = 'linear';
                 layerMode = 'auto';
+                activationMode = 'relu';
                 isExhibitionMode = false;
                 currentLanguage = 'en';
             }
@@ -2341,11 +2514,13 @@
         window.setAxisMode = setAxisMode;
         window.setGeometryMode = setGeometryMode;
         window.setLayerMode = setLayerMode;
+        window.setActivationMode = setActivationMode;
         window.setColorLimit = setColorLimit;
         window.setRandomness = setRandomness;
         window.toggleExhibitionMode = toggleExhibitionMode;
         window.clearManualPalette = clearManualPalette;
         window.toggleSequenceRecording = toggleSequenceRecording;
+        window.exportUniverseBatchZip = exportUniverseBatchZip;
 
         window.addEventListener('DOMContentLoaded', bootstrap);
     </script>
