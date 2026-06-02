@@ -232,18 +232,32 @@
             accent-color: var(--green);
         }
 
+        .control-panel input[type="number"] {
+            width: 72px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            color: var(--green);
+            font: inherit;
+            padding: 4px 5px;
+            border-radius: 2px;
+        }
+
         .control-panel span {
             color: var(--green);
             min-width: 2.4rem;
             text-align: right;
         }
 
-        .axis-controls {
+        .axis-controls,
+        .geometry-controls,
+        .layer-controls {
             display: flex;
             gap: 0.35rem;
         }
 
-        .axis-controls button {
+        .axis-controls button,
+        .geometry-controls button,
+        .layer-controls button {
             min-width: 32px;
             padding: 5px 8px;
         }
@@ -400,7 +414,7 @@
 
     <main>
         <div class="art-frame">
-            <canvas id="main-canvas" width="600" height="600"></canvas>
+            <canvas id="main-canvas" width="1200" height="1200"></canvas>
             <div class="latent-matrix" id="matrix-container"></div>
         </div>
 
@@ -410,7 +424,20 @@
             <button class="action-btn" id="jump-btn" type="button">LATENT JUMP</button>
             <button class="action-btn" id="mode-btn" type="button">EXHIBIT MODE</button>
             <button class="action-btn" id="save-btn" type="button">SAVE PNG</button>
+            <button class="action-btn" id="record-btn" type="button">RECORD ZIP</button>
             <button class="action-btn" id="lang-btn" type="button">中文</button>
+            <label class="control-panel" id="frames-label">
+                FRAMES
+                <input id="sequence-frames" type="number" min="1" max="1000" step="1" value="240" />
+            </label>
+            <label class="control-panel" id="interval-label">
+                EVERY
+                <input id="sequence-interval" type="number" min="1" max="100" step="1" value="1" />
+            </label>
+            <label class="control-panel" id="size-label">
+                SIZE
+                <input id="sequence-size" type="number" min="1200" max="4096" step="100" value="2400" />
+            </label>
             <label class="control-panel" id="color-label">
                 COLORS
                 <input id="color-count" type="range" min="0" max="32" step="1" value="0" />
@@ -421,6 +448,15 @@
                 <input id="randomness" type="range" min="0" max="100" step="1" value="40" />
                 <span id="randomness-value">40</span>
             </label>
+            <div class="control-panel geometry-controls" aria-label="form controls">
+                <button class="action-btn active" id="form-linear-btn" type="button">LINE</button>
+                <button class="action-btn" id="form-radial-btn" type="button">CIRCLE</button>
+            </div>
+            <div class="control-panel layer-controls" aria-label="layer controls">
+                <button class="action-btn active" id="layer-auto-btn" type="button">AUTO Z</button>
+                <button class="action-btn" id="layer-x-btn" type="button">X TOP</button>
+                <button class="action-btn" id="layer-y-btn" type="button">Y TOP</button>
+            </div>
             <div class="control-panel axis-controls" aria-label="axis controls">
                 <button class="action-btn active" id="axis-both-btn" type="button">XY</button>
                 <button class="action-btn" id="axis-x-btn" type="button">X</button>
@@ -450,6 +486,8 @@
                     <div>H_SKIP: <span id="param-hskip">0.00</span></div>
                     <div>Z_SPREAD: <span id="param-z">0.00</span></div>
                     <div>RANDOM: <span id="param-random">0.00</span></div>
+                    <div>FORM: <span id="param-form">LINE</span></div>
+                    <div>LAYER: <span id="param-layer">AUTO</span></div>
                     <div>AXIS: <span id="param-axis">XY</span></div>
                     <div>SPEED: <span id="param-speed">0.00</span></div>
                 </div>
@@ -476,6 +514,7 @@
         const MAX_TRAIL_POINTS = 240;
         const STORAGE_KEY = 'latent-art-canvas-v3-state';
         const STRIPE_DENSITY_SCALE = 0.62;
+        const TAU = Math.PI * 2;
 
         const sigmoid = x => 1 / (1 + Math.exp(-x));
         const relu = x => Math.max(0, x);
@@ -497,6 +536,8 @@
         let colorLimit = 0;
         let randomnessLevel = 0.4;
         let axisMode = 'both';
+        let geometryMode = 'linear';
+        let layerMode = 'auto';
         let manualPaletteIndices = [];
         let lastActivePaletteIndices = [];
         let currentLanguage = 'en';
@@ -507,6 +548,8 @@
         let lastForwardState = null;
         let previousDecoderState = null;
         let lastPersistFrame = 0;
+        let isRecordingSequence = false;
+        let sequenceRecorder = null;
 
         function randUniform(scale = 1) {
             return (Math.random() * 2 - 1) * scale;
@@ -561,12 +604,12 @@
             return `rgba(${Math.round(lerp(a.r, b.r, f))},${Math.round(lerp(a.g, b.g, f))},${Math.round(lerp(a.b, b.b, f))},${alpha})`;
         }
 
-        function createStableSampler(scope, params = null) {
+        function createStableSampler(scope, params = null, renderGeneration = generationCount) {
             const tempo = params ? params.randomTempo : 0.34;
             const phaseBias = params ? params.randomPhaseBias : 0;
             const phaseWarp = params ? params.randomPhaseWarp : 0;
             const rate = randomnessLevel <= 0 ? 0 : Math.pow(randomnessLevel, 1.35) * tempo;
-            const curvedGeneration = generationCount + Math.sin(generationCount * 0.013 + phaseBias) * phaseWarp;
+            const curvedGeneration = renderGeneration + Math.sin(renderGeneration * 0.013 + phaseBias) * phaseWarp;
             const phase = rate <= 0 ? 0 : Math.floor(curvedGeneration * rate + phaseBias * 11);
             return salt => unitFromHash(hashString(`${universeSeed}:${scope}:${phase}:${salt}`));
         }
@@ -861,10 +904,17 @@
             updateText('reset-btn', t('reset'));
             updateText('jump-btn', t('jump'));
             updateText('save-btn', t('save'));
+            updateText('record-btn', 'RECORD ZIP');
             updateText('lang-btn', t('language'));
             updateText('palette-label', t('palette'));
             updateText('palette-auto-btn', t('auto'));
 
+            const framesLabel = document.getElementById('frames-label');
+            if (framesLabel) framesLabel.firstChild.nodeValue = 'FRAMES ';
+            const intervalLabel = document.getElementById('interval-label');
+            if (intervalLabel) intervalLabel.firstChild.nodeValue = 'EVERY ';
+            const sizeLabel = document.getElementById('size-label');
+            if (sizeLabel) sizeLabel.firstChild.nodeValue = 'SIZE ';
             const colorLabel = document.getElementById('color-label');
             if (colorLabel) colorLabel.firstChild.nodeValue = `${t('colors')} `;
             const randomLabel = document.getElementById('random-label');
@@ -988,6 +1038,129 @@
             }
 
             return stripes;
+        }
+
+        function generateRadialSegments(dir, span, config, pickColor, globalConfig, sampler = null) {
+            const segments = [];
+            const combinedSkip = clamp(config.skipRate + globalConfig.whitespaceBias, 0, 0.42);
+            let current = 0;
+            let segmentIndex = 0;
+
+            while (current < span) {
+                const widthNoise = sampler ? sampler(`width:${segmentIndex}`) : Math.random();
+                const sampled = span * config.density * config.widthMean * (
+                    0.35 + Math.pow(widthNoise, 1 + config.clusterBias) * config.widthJitter
+                );
+                const minSize = span * config.minWidth;
+                const size = Math.max(sampled, minSize);
+                const end = Math.min(span, current + size);
+                const segmentSize = end - current;
+                if (segmentSize <= 0.0001) break;
+
+                const keepNoise = sampler ? sampler(`keep:${segmentIndex}`) : Math.random();
+                if (keepNoise > combinedSkip) {
+                    segments.push({
+                        dir,
+                        pos: current,
+                        size: segmentSize,
+                        color: pickColor(`color:${segmentIndex}`),
+                        z: (sampler ? sampler(`z:${segmentIndex}`) : Math.random()) * globalConfig.zSpread + config.zBias + globalConfig.globalZBias
+                    });
+                }
+
+                current = end;
+                segmentIndex++;
+            }
+
+            return segments;
+        }
+
+        function drawLinearParts(ctx, w, h, parts, params) {
+            ctx.globalAlpha = 1;
+            for (const s of parts) {
+                ctx.fillStyle = s.color;
+
+                if (s.dir === 'vertical') {
+                    ctx.fillRect(
+                        Math.round(s.pos),
+                        0,
+                        Math.max(1, Math.round(s.size + params.edgeExpand)),
+                        h
+                    );
+                } else {
+                    ctx.fillRect(
+                        0,
+                        Math.round(s.pos),
+                        w,
+                        Math.max(1, Math.round(s.size + params.edgeExpand))
+                    );
+                }
+            }
+        }
+
+        function drawRadialParts(ctx, w, h, parts, backgroundColor) {
+            const cx = w / 2;
+            const cy = h / 2;
+            const radius = Math.min(w, h) * 0.47;
+            const angleOverlap = 0.0035;
+            const radialOverlap = Math.max(2, radius * 0.004);
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, TAU);
+            ctx.clip();
+            ctx.fillStyle = backgroundColor || '#fafafa';
+            ctx.fillRect(0, 0, w, h);
+
+            for (const s of parts) {
+                ctx.fillStyle = s.color;
+
+                if (s.dir === 'sector') {
+                    const start = -Math.PI / 2 + s.pos - angleOverlap;
+                    const end = -Math.PI / 2 + s.pos + s.size + angleOverlap;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.arc(cx, cy, radius + radialOverlap, start, end);
+                    ctx.closePath();
+                    ctx.fill();
+                } else {
+                    const inner = Math.max(0, s.pos - radialOverlap);
+                    const outer = Math.min(radius + radialOverlap, s.pos + s.size + radialOverlap);
+                    if (outer <= inner) continue;
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, outer, 0, TAU);
+                    if (inner > 0) ctx.arc(cx, cy, inner, TAU, 0, true);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+
+            ctx.restore();
+        }
+
+        function sortPartsForLayerMode(parts) {
+            if (layerMode === 'xTop') {
+                parts.sort((a, b) => {
+                    const ax = a.dir === 'vertical' || a.dir === 'sector' ? 1 : 0;
+                    const bx = b.dir === 'vertical' || b.dir === 'sector' ? 1 : 0;
+                    return ax - bx || a.z - b.z;
+                });
+            } else if (layerMode === 'yTop') {
+                parts.sort((a, b) => {
+                    const ay = a.dir === 'horizontal' || a.dir === 'ring' ? 1 : 0;
+                    const by = b.dir === 'horizontal' || b.dir === 'ring' ? 1 : 0;
+                    return ay - by || a.z - b.z;
+                });
+            } else {
+                parts.sort((a, b) => a.z - b.z);
+            }
+        }
+
+        function getLayerLabel() {
+            if (layerMode === 'xTop') return geometryMode === 'radial' ? 'SECTOR TOP' : 'VERT TOP';
+            if (layerMode === 'yTop') return geometryMode === 'radial' ? 'RING TOP' : 'HORIZ TOP';
+            return 'AUTO';
         }
 
         function drawLatentMap(currentPoint) {
@@ -1135,7 +1308,7 @@
             };
         }
 
-        function drawArt(canvas, entity) {
+        function drawArt(canvas, entity, options = {}) {
             if (!canvas || !entity || !universeDecoder) return;
 
             const ctx = canvas.getContext('2d');
@@ -1143,23 +1316,30 @@
 
             const w = canvas.width;
             const h = canvas.height;
+            const updatePanels = options.updatePanels !== false;
+            const renderGeneration = Number.isFinite(options.generationCount) ? options.generationCount : generationCount;
             const params = entity.getPhysicalParams(universeDecoder);
-            lastParams = params;
-            lastForwardState = params._forwardState;
-            lastActivePaletteIndices = params.paletteIndices.slice();
-            updatePaletteUI();
+            if (updatePanels) {
+                lastParams = params;
+                lastForwardState = params._forwardState;
+                lastActivePaletteIndices = params.paletteIndices.slice();
+                updatePaletteUI();
 
-            const currentPoint = projectLatentTo2D(entity.z);
-            pushLatentTrail(currentPoint);
-            drawLatentMap(currentPoint);
-            drawDecoderView(lastForwardState);
+                const currentPoint = projectLatentTo2D(entity.z);
+                pushLatentTrail(currentPoint);
+                drawLatentMap(currentPoint);
+                drawDecoderView(lastForwardState);
+            }
 
             ctx.globalAlpha = 1;
-            ctx.fillStyle = '#fafafa';
-            ctx.fillRect(0, 0, w, h);
+            ctx.clearRect(0, 0, w, h);
+            if (geometryMode !== 'radial') {
+                ctx.fillStyle = '#fafafa';
+                ctx.fillRect(0, 0, w, h);
+            }
 
-            const vSampler = createStableSampler('vertical', params);
-            const hSampler = createStableSampler('horizontal', params);
+            const vSampler = createStableSampler('vertical', params, renderGeneration);
+            const hSampler = createStableSampler('horizontal', params, renderGeneration);
             const vPickColor = createColorPicker(params.paletteIndices, params.energies, params.vPaletteBias, params.accentBias, salt => vSampler(`palette:${salt}`));
             const hPickColor = createColorPicker(params.paletteIndices, params.energies, params.hPaletteBias, params.accentBias, salt => hSampler(`palette:${salt}`));
 
@@ -1205,52 +1385,101 @@
                 hSampler
             );
 
-            let allStripes = [];
-            if (axisMode === 'both' || axisMode === 'x') allStripes = allStripes.concat(verticalStripes);
-            if (axisMode === 'both' || axisMode === 'y') allStripes = allStripes.concat(horizontalStripes);
+            let parts = [];
 
-            if (allStripes.length < 3) {
-                if (axisMode === 'both' || axisMode === 'x') {
-                    allStripes.push({ dir: 'vertical', pos: 0, size: Math.round(w * 0.28), color: FULL_PALETTE[0], z: 0 });
+            if (geometryMode === 'radial') {
+                const radius = Math.min(w, h) * 0.47;
+                const sectorSegments = generateRadialSegments(
+                    'sector',
+                    TAU,
+                    {
+                        density: params.vDensity * STRIPE_DENSITY_SCALE * 0.92 * (0.75 + params.familyBalance * 0.5),
+                        widthMean: params.vWidthMean,
+                        widthJitter: params.vWidthJitter,
+                        skipRate: params.vSkipRate,
+                        minWidth: Math.max(0.006, params.vMinWidth * 1.1),
+                        clusterBias: params.vClusterBias,
+                        zBias: params.vZBias
+                    },
+                    vPickColor,
+                    {
+                        whitespaceBias: params.whitespaceBias,
+                        zSpread: params.zSpread,
+                        globalZBias: params.globalZBias
+                    },
+                    vSampler
+                );
+
+                const ringSegments = generateRadialSegments(
+                    'ring',
+                    radius,
+                    {
+                        density: params.hDensity * STRIPE_DENSITY_SCALE * (1.25 - params.familyBalance * 0.5),
+                        widthMean: params.hWidthMean,
+                        widthJitter: params.hWidthJitter,
+                        skipRate: params.hSkipRate,
+                        minWidth: params.hMinWidth,
+                        clusterBias: params.hClusterBias,
+                        zBias: params.hZBias
+                    },
+                    hPickColor,
+                    {
+                        whitespaceBias: params.whitespaceBias,
+                        zSpread: params.zSpread,
+                        globalZBias: params.globalZBias
+                    },
+                    hSampler
+                );
+
+                if (axisMode === 'both' || axisMode === 'x') parts = parts.concat(sectorSegments);
+                if (axisMode === 'both' || axisMode === 'y') parts = parts.concat(ringSegments);
+
+                if (parts.length < 3) {
+                    if (axisMode === 'both' || axisMode === 'x') {
+                        parts.push({ dir: 'sector', pos: 0, size: TAU * 0.18, color: FULL_PALETTE[0], z: 0 });
+                    }
+                    if (axisMode === 'both' || axisMode === 'y') {
+                        parts.push({ dir: 'ring', pos: radius * 0.24, size: radius * 0.28, color: FULL_PALETTE[6], z: 1 });
+                    }
                 }
-                if (axisMode === 'both' || axisMode === 'y') {
-                    allStripes.push({ dir: 'horizontal', pos: Math.round(h * 0.2), size: Math.round(h * 0.38), color: FULL_PALETTE[6], z: 1 });
+
+                const radialBackground = params.paletteIndices.length > 0
+                    ? FULL_PALETTE[params.paletteIndices[0]]
+                    : '#fafafa';
+
+                sortPartsForLayerMode(parts);
+                drawRadialParts(ctx, w, h, parts, radialBackground);
+            } else {
+                if (axisMode === 'both' || axisMode === 'x') parts = parts.concat(verticalStripes);
+                if (axisMode === 'both' || axisMode === 'y') parts = parts.concat(horizontalStripes);
+
+                if (parts.length < 3) {
+                    if (axisMode === 'both' || axisMode === 'x') {
+                        parts.push({ dir: 'vertical', pos: 0, size: Math.round(w * 0.28), color: FULL_PALETTE[0], z: 0 });
+                    }
+                    if (axisMode === 'both' || axisMode === 'y') {
+                        parts.push({ dir: 'horizontal', pos: Math.round(h * 0.2), size: Math.round(h * 0.38), color: FULL_PALETTE[6], z: 1 });
+                    }
                 }
+
+                sortPartsForLayerMode(parts);
+                drawLinearParts(ctx, w, h, parts, params);
             }
 
-            allStripes.sort((a, b) => a.z - b.z);
-
-            ctx.globalAlpha = 1;
-            for (const s of allStripes) {
-                ctx.fillStyle = s.color;
-
-                if (s.dir === 'vertical') {
-                    ctx.fillRect(
-                        Math.round(s.pos),
-                        0,
-                        Math.max(1, Math.round(s.size + params.edgeExpand)),
-                        h
-                    );
-                } else {
-                    ctx.fillRect(
-                        0,
-                        Math.round(s.pos),
-                        w,
-                        Math.max(1, Math.round(s.size + params.edgeExpand))
-                    );
-                }
+            if (updatePanels) {
+                updateText('param-colors', params.paletteIndices.length);
+                updateText('param-step', params.stepMod.toFixed(3));
+                updateText('param-vdens', params.vDensity.toFixed(3));
+                updateText('param-hdens', params.hDensity.toFixed(3));
+                updateText('param-vskip', params.vSkipRate.toFixed(2));
+                updateText('param-hskip', params.hSkipRate.toFixed(2));
+                updateText('param-z', params.zSpread.toFixed(2));
+                updateText('param-random', randomnessLevel.toFixed(2));
+                updateText('param-form', geometryMode === 'radial' ? 'CIRCLE' : 'LINE');
+                updateText('param-layer', getLayerLabel());
+                updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
+                updateText('param-speed', lastLatentSpeed.toFixed(2));
             }
-
-            updateText('param-colors', params.paletteIndices.length);
-            updateText('param-step', params.stepMod.toFixed(3));
-            updateText('param-vdens', params.vDensity.toFixed(3));
-            updateText('param-hdens', params.hDensity.toFixed(3));
-            updateText('param-vskip', params.vSkipRate.toFixed(2));
-            updateText('param-hskip', params.hSkipRate.toFixed(2));
-            updateText('param-z', params.zSpread.toFixed(2));
-            updateText('param-random', randomnessLevel.toFixed(2));
-            updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
-            updateText('param-speed', lastLatentSpeed.toFixed(2));
         }
 
         function loop(timestamp) {
@@ -1268,6 +1497,7 @@
                     currentEntity.step(speed);
                     generationCount++;
                     drawArt(getCanvas(), currentEntity);
+                    captureSequenceFrame(currentEntity, generationCount);
                     updateText('gen-counter', generationCount);
                     updateMatrixUI(currentEntity);
                     maybePersistState();
@@ -1313,6 +1543,7 @@
         function togglePause() {
             isPaused = !isPaused;
             setPausedVisual(isPaused);
+            updateRecordButton();
 
             if (isPaused) {
                 if (animationId !== null) {
@@ -1389,6 +1620,8 @@
                     colorLimit,
                     randomnessLevel,
                     axisMode,
+                    geometryMode,
+                    layerMode,
                     manualPaletteIndices,
                     currentLanguage,
                     entity: serializeEntity(currentEntity),
@@ -1422,6 +1655,8 @@
                 colorLimit = Number.isFinite(state.colorLimit) ? clamp(Math.floor(state.colorLimit), 0, 32) : 0;
                 randomnessLevel = Number.isFinite(state.randomnessLevel) ? clamp(state.randomnessLevel, 0, 1) : 0.4;
                 axisMode = ['both', 'x', 'y'].includes(state.axisMode) ? state.axisMode : 'both';
+                geometryMode = ['linear', 'radial'].includes(state.geometryMode) ? state.geometryMode : 'linear';
+                layerMode = ['auto', 'xTop', 'yTop'].includes(state.layerMode) ? state.layerMode : 'auto';
                 manualPaletteIndices = Array.isArray(state.manualPaletteIndices)
                     ? state.manualPaletteIndices.map(x => Math.floor(x)).filter(x => x >= 0 && x < FULL_PALETTE.length)
                     : [];
@@ -1458,8 +1693,33 @@
             updateText('param-color-limit', colorLimit === 0 ? 'AUTO' : colorLimit);
             updateText('randomness-value', randomValue);
             updateText('param-random', randomnessLevel.toFixed(2));
+            updateText('param-form', geometryMode === 'radial' ? 'CIRCLE' : 'LINE');
+            updateText('param-layer', getLayerLabel());
             updateText('param-axis', axisMode === 'both' ? 'XY' : axisMode.toUpperCase());
             updatePaletteUI();
+
+            const geometryButtons = {
+                linear: document.getElementById('form-linear-btn'),
+                radial: document.getElementById('form-radial-btn')
+            };
+
+            for (const [mode, btn] of Object.entries(geometryButtons)) {
+                if (btn) btn.classList.toggle('active', geometryMode === mode);
+            }
+
+            const layerButtons = {
+                auto: document.getElementById('layer-auto-btn'),
+                xTop: document.getElementById('layer-x-btn'),
+                yTop: document.getElementById('layer-y-btn')
+            };
+
+            if (layerButtons.auto) layerButtons.auto.innerText = 'AUTO Z';
+            if (layerButtons.xTop) layerButtons.xTop.innerText = geometryMode === 'radial' ? 'SECTOR TOP' : 'VERT TOP';
+            if (layerButtons.yTop) layerButtons.yTop.innerText = geometryMode === 'radial' ? 'RING TOP' : 'HORIZ TOP';
+
+            for (const [mode, btn] of Object.entries(layerButtons)) {
+                if (btn) btn.classList.toggle('active', layerMode === mode);
+            }
 
             const axisButtons = {
                 both: document.getElementById('axis-both-btn'),
@@ -1489,6 +1749,22 @@
         function setAxisMode(mode) {
             if (!['both', 'x', 'y'].includes(mode)) return;
             axisMode = mode;
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function setGeometryMode(mode) {
+            if (!['linear', 'radial'].includes(mode)) return;
+            geometryMode = mode;
+            syncControlUI();
+            drawArt(getCanvas(), currentEntity);
+            saveState();
+        }
+
+        function setLayerMode(mode) {
+            if (!['auto', 'xTop', 'yTop'].includes(mode)) return;
+            layerMode = mode;
             syncControlUI();
             drawArt(getCanvas(), currentEntity);
             saveState();
@@ -1559,6 +1835,259 @@
             link.click();
         }
 
+        function getNumberInputValue(id, fallback, min, max) {
+            const input = document.getElementById(id);
+            const value = input ? Number(input.value) : fallback;
+            return clamp(Math.floor(Number.isFinite(value) ? value : fallback), min, max);
+        }
+
+        function canvasToPngBlob(canvas) {
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(blob => {
+                    if (blob) resolve(blob);
+                    else reject(new Error('PNG export failed'));
+                }, 'image/png');
+            });
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = url;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        }
+
+        const CRC_TABLE = (() => {
+            const table = new Uint32Array(256);
+            for (let i = 0; i < 256; i++) {
+                let c = i;
+                for (let j = 0; j < 8; j++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+                table[i] = c >>> 0;
+            }
+            return table;
+        })();
+
+        function crc32(bytes) {
+            let crc = 0xFFFFFFFF;
+            for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+
+        function dosDateTime(date = new Date()) {
+            const time =
+                (date.getHours() << 11) |
+                (date.getMinutes() << 5) |
+                Math.floor(date.getSeconds() / 2);
+            const day =
+                ((date.getFullYear() - 1980) << 9) |
+                ((date.getMonth() + 1) << 5) |
+                date.getDate();
+            return { time, day };
+        }
+
+        function writeU16(bytes, value) {
+            bytes.push(value & 0xFF, (value >>> 8) & 0xFF);
+        }
+
+        function writeU32(bytes, value) {
+            bytes.push(value & 0xFF, (value >>> 8) & 0xFF, (value >>> 16) & 0xFF, (value >>> 24) & 0xFF);
+        }
+
+        function makeZipBlob(entries) {
+            const encoder = new TextEncoder();
+            const fileChunks = [];
+            const centralChunks = [];
+            const { time, day } = dosDateTime();
+            let offset = 0;
+
+            for (const entry of entries) {
+                const nameBytes = encoder.encode(entry.name);
+                const data = entry.data;
+                const crc = crc32(data);
+                const local = [];
+
+                writeU32(local, 0x04034B50);
+                writeU16(local, 20);
+                writeU16(local, 0);
+                writeU16(local, 0);
+                writeU16(local, time);
+                writeU16(local, day);
+                writeU32(local, crc);
+                writeU32(local, data.length);
+                writeU32(local, data.length);
+                writeU16(local, nameBytes.length);
+                writeU16(local, 0);
+
+                const localHeader = new Uint8Array(local);
+                fileChunks.push(localHeader, nameBytes, data);
+
+                const central = [];
+                writeU32(central, 0x02014B50);
+                writeU16(central, 20);
+                writeU16(central, 20);
+                writeU16(central, 0);
+                writeU16(central, 0);
+                writeU16(central, time);
+                writeU16(central, day);
+                writeU32(central, crc);
+                writeU32(central, data.length);
+                writeU32(central, data.length);
+                writeU16(central, nameBytes.length);
+                writeU16(central, 0);
+                writeU16(central, 0);
+                writeU16(central, 0);
+                writeU16(central, 0);
+                writeU32(central, 0);
+                writeU32(central, offset);
+                centralChunks.push(new Uint8Array(central), nameBytes);
+
+                offset += localHeader.length + nameBytes.length + data.length;
+            }
+
+            const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const end = [];
+            writeU32(end, 0x06054B50);
+            writeU16(end, 0);
+            writeU16(end, 0);
+            writeU16(end, entries.length);
+            writeU16(end, entries.length);
+            writeU32(end, centralSize);
+            writeU32(end, offset);
+            writeU16(end, 0);
+
+            return new Blob([...fileChunks, ...centralChunks, new Uint8Array(end)], { type: 'application/zip' });
+        }
+
+        function resetRecordButton(label = 'RECORD ZIP') {
+            const recordBtn = document.getElementById('record-btn');
+            if (!recordBtn) return;
+            recordBtn.disabled = false;
+            recordBtn.innerText = label;
+        }
+
+        function updateRecordButton() {
+            const recordBtn = document.getElementById('record-btn');
+            if (!recordBtn || !sequenceRecorder) return;
+
+            const count = sequenceRecorder.entries.length;
+            const target = sequenceRecorder.targetFrames;
+            const suffix = isPaused ? ' PAUSED' : '';
+            recordBtn.innerText = `STOP ${count}/${target}${suffix}`;
+        }
+
+        function toggleSequenceRecording() {
+            if (isRecordingSequence) {
+                stopSequenceRecording();
+                return;
+            }
+
+            if (!currentEntity || !universeDecoder) return;
+
+            const targetFrames = getNumberInputValue('sequence-frames', 240, 1, 1000);
+            const outputSize = getNumberInputValue('sequence-size', 2400, 1200, 4096);
+            const interval = getNumberInputValue('sequence-interval', 1, 1, 100);
+
+            sequenceRecorder = {
+                active: true,
+                targetFrames,
+                outputSize,
+                interval,
+                entries: [],
+                visibleFrameCount: 0,
+                pendingCaptures: 0,
+                startGeneration: generationCount,
+                stopRequested: false,
+                finishing: false
+            };
+
+            isRecordingSequence = true;
+            updateRecordButton();
+        }
+
+        function stopSequenceRecording() {
+            if (!sequenceRecorder) return;
+            sequenceRecorder.stopRequested = true;
+            sequenceRecorder.active = false;
+            updateRecordButton();
+            finishSequenceRecordingIfReady();
+        }
+
+        function captureSequenceFrame(entity, renderGeneration) {
+            const recorder = sequenceRecorder;
+            if (!recorder || !recorder.active || recorder.stopRequested) return;
+            if (recorder.entries.length + recorder.pendingCaptures >= recorder.targetFrames) {
+                stopSequenceRecording();
+                return;
+            }
+
+            recorder.visibleFrameCount++;
+            if ((recorder.visibleFrameCount - 1) % recorder.interval !== 0) return;
+
+            const frameNumber = recorder.entries.length + recorder.pendingCaptures + 1;
+            const entitySnapshot = restoreEntity(serializeEntity(entity));
+            recorder.pendingCaptures++;
+            updateRecordButton();
+
+            captureSequenceFrameAsync(recorder, entitySnapshot, renderGeneration, frameNumber);
+        }
+
+        async function captureSequenceFrameAsync(recorder, entitySnapshot, renderGeneration, frameNumber) {
+            try {
+                const captureCanvas = document.createElement('canvas');
+                captureCanvas.width = recorder.outputSize;
+                captureCanvas.height = recorder.outputSize;
+
+                drawArt(captureCanvas, entitySnapshot, {
+                    updatePanels: false,
+                    generationCount: renderGeneration
+                });
+
+                const blob = await canvasToPngBlob(captureCanvas);
+                recorder.entries.push({
+                    name: `latent-art-frame-${String(frameNumber).padStart(6, '0')}.png`,
+                    data: new Uint8Array(await blob.arrayBuffer())
+                });
+            } catch (err) {
+                console.error('[Sequence export] Frame capture failed:', err);
+                recorder.stopRequested = true;
+                recorder.active = false;
+            } finally {
+                recorder.pendingCaptures--;
+
+                if (recorder.entries.length >= recorder.targetFrames) {
+                    recorder.stopRequested = true;
+                    recorder.active = false;
+                }
+
+                updateRecordButton();
+                finishSequenceRecordingIfReady();
+            }
+        }
+
+        function finishSequenceRecordingIfReady() {
+            const recorder = sequenceRecorder;
+            if (!recorder || recorder.finishing) return;
+            if (!recorder.stopRequested || recorder.pendingCaptures > 0) return;
+
+            recorder.finishing = true;
+            const entries = recorder.entries.slice().sort((a, b) => a.name.localeCompare(b.name));
+
+            if (entries.length > 0) {
+                const zip = makeZipBlob(entries);
+                const filename = `latent-art-sequence-gen-${String(recorder.startGeneration).padStart(6, '0')}-${recorder.outputSize}px-${entries.length}f-step${recorder.interval}.zip`;
+                downloadBlob(zip, filename);
+                resetRecordButton('RECORD ZIP');
+            } else {
+                resetRecordButton('NO FRAMES');
+                setTimeout(() => resetRecordButton(), 900);
+            }
+
+            isRecordingSequence = false;
+            sequenceRecorder = null;
+        }
+
         function jumpToLatentMap(event) {
             if (!currentEntity || !latentProjector.x || !latentProjector.y) return;
 
@@ -1600,6 +2129,7 @@
             randomizeRuntimeControls();
             manualPaletteIndices = [];
             colorLimit = 0;
+            layerMode = 'auto';
 
             updateText('gen-counter', generationCount);
             syncControlUI();
@@ -1626,9 +2156,15 @@
             const jumpBtn = document.getElementById('jump-btn');
             const modeBtn = document.getElementById('mode-btn');
             const saveBtn = document.getElementById('save-btn');
+            const recordBtn = document.getElementById('record-btn');
             const langBtn = document.getElementById('lang-btn');
             const colorInput = document.getElementById('color-count');
             const randomnessInput = document.getElementById('randomness');
+            const formLinearBtn = document.getElementById('form-linear-btn');
+            const formRadialBtn = document.getElementById('form-radial-btn');
+            const layerAutoBtn = document.getElementById('layer-auto-btn');
+            const layerXBtn = document.getElementById('layer-x-btn');
+            const layerYBtn = document.getElementById('layer-y-btn');
             const axisBothBtn = document.getElementById('axis-both-btn');
             const axisXBtn = document.getElementById('axis-x-btn');
             const axisYBtn = document.getElementById('axis-y-btn');
@@ -1640,9 +2176,15 @@
             if (jumpBtn) jumpBtn.addEventListener('click', jumpLatentRegion);
             if (modeBtn) modeBtn.addEventListener('click', toggleExhibitionMode);
             if (saveBtn) saveBtn.addEventListener('click', exportMainCanvas);
+            if (recordBtn) recordBtn.addEventListener('click', toggleSequenceRecording);
             if (langBtn) langBtn.addEventListener('click', toggleLanguage);
             if (colorInput) colorInput.addEventListener('input', event => setColorLimit(event.target.value));
             if (randomnessInput) randomnessInput.addEventListener('input', event => setRandomness(event.target.value));
+            if (formLinearBtn) formLinearBtn.addEventListener('click', () => setGeometryMode('linear'));
+            if (formRadialBtn) formRadialBtn.addEventListener('click', () => setGeometryMode('radial'));
+            if (layerAutoBtn) layerAutoBtn.addEventListener('click', () => setLayerMode('auto'));
+            if (layerXBtn) layerXBtn.addEventListener('click', () => setLayerMode('xTop'));
+            if (layerYBtn) layerYBtn.addEventListener('click', () => setLayerMode('yTop'));
             if (axisBothBtn) axisBothBtn.addEventListener('click', () => setAxisMode('both'));
             if (axisXBtn) axisXBtn.addEventListener('click', () => setAxisMode('x'));
             if (axisYBtn) axisYBtn.addEventListener('click', () => setAxisMode('y'));
@@ -1715,6 +2257,29 @@
             assert(testStripes.every(s => Number.isInteger(s.size)), 'Stripe sizes should be pixel-aligned integers');
             assert(testStripes.every(s => s.size >= 1), 'Stripe sizes should be at least 1 pixel');
 
+            const testRadial = generateRadialSegments(
+                'sector',
+                TAU,
+                {
+                    density: 0.2,
+                    widthMean: 1.0,
+                    widthJitter: 1.0,
+                    skipRate: 0.0,
+                    minWidth: 0.02,
+                    clusterBias: 1.0,
+                    zBias: 0.0
+                },
+                () => '#000000',
+                {
+                    whitespaceBias: 0.0,
+                    zSpread: 1.0,
+                    globalZBias: 0.0
+                }
+            );
+
+            assert(testRadial.length > 0, 'generateRadialSegments should create radial parts');
+            assert(testRadial.every(s => s.pos >= 0 && s.size > 0), 'Radial parts should have positive spans');
+
             const beforeJump = entity.z[1];
             entity.jump(0.95);
             assert(Number.isFinite(entity.z[1]), 'Latent jump should keep finite values');
@@ -1747,6 +2312,8 @@
                 randomizeRuntimeControls();
                 manualPaletteIndices = [];
                 axisMode = 'both';
+                geometryMode = 'linear';
+                layerMode = 'auto';
                 isExhibitionMode = false;
                 currentLanguage = 'en';
             }
@@ -1772,10 +2339,13 @@
         window.hardReset = hardReset;
         window.jumpLatentRegion = jumpLatentRegion;
         window.setAxisMode = setAxisMode;
+        window.setGeometryMode = setGeometryMode;
+        window.setLayerMode = setLayerMode;
         window.setColorLimit = setColorLimit;
         window.setRandomness = setRandomness;
         window.toggleExhibitionMode = toggleExhibitionMode;
         window.clearManualPalette = clearManualPalette;
+        window.toggleSequenceRecording = toggleSequenceRecording;
 
         window.addEventListener('DOMContentLoaded', bootstrap);
     </script>
